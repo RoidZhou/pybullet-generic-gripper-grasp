@@ -1,0 +1,7 @@
+object_urdf_fn: /home/zhou/autolab/generic_grasp_for_all_gripper/datasets/grasp/yellow_cup/model.urdf
+Object State: closed
+Direction Camera: 0.381663 0.447134 0.808953
+mat44: [[-9.23448875e-01 -3.83721481e-01  7.51410727e-18 -0.00000000e+00]
+ [ 3.82167449e-01 -9.19709001e-01 -8.99076971e-02 -0.00000000e+00]
+ [-3.44995147e-02  8.30251617e-02 -9.95950102e-01  5.00000000e-01]
+ [ 0.00000000e+00  0.00000000e+00  0.00000000e+00  1.00000000e+00]]
