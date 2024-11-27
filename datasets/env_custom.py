@@ -23,7 +23,7 @@ class Env(gym.Env):
         self.current_step = 0
         self.object_position_offset = object_position_offset
         # Observation buffer
-        self.control_dt=1./240.
+        self.control_dt=1./60.
         self.prev_observation = tuple()
         self.endeffort_link = "j2s7s300_link_7"
         self.eefID = -1
@@ -69,10 +69,11 @@ class Env(gym.Env):
             self.step_simulation()
             if self.check_contact:
                 points = update_contact_points()
-                contactSuccess = self.check_contact_is_valid(points)
+                contactSuccess = self.check_contact_is_valid(points, n)
                 print("num point:", contactSuccess, len(points))
                 if not contactSuccess:
                     raise ContactError()
+        self.step_length = 0
 
     def check_depth_change(self, cur_depth):
         _, prev_depth, _ = self.prev_observation
@@ -391,7 +392,7 @@ class Env(gym.Env):
                 "Expected torque vector of "
                 "length {}, got {}".format(self.numJoints, self.numJoints))
 
-    def check_contact_is_valid(self, points, custom=True):
+    def check_contact_is_valid(self, points, n):
         # self.contacts = self.scene.get_contacts()
         self.contacts = points
 
@@ -407,12 +408,12 @@ class Env(gym.Env):
             linkIndex2 = c.linkIndexB
             has_impulse = False
 
-            if (self.step_length == 1000):
+            if (self.step_length == n):
                 print("bodyidA, linkIndex1, bodyidA, linkIndex1", bodyidA, linkIndex1, bodyidA, linkIndex1)
             if abs(c.normalForce) > 1e-4:
                 has_impulse = True
             if has_impulse and self.first_timestep_check_contact: # self.gripperJointsInfo
-                print("first contact")
+                print("first contact", self.step_length)
                 if (bodyidA == 1 and linkIndex1 == -1 and bodyidA == 3 and linkIndex2 in self.gripper_actor_ids):
                     print("contact ground")
                     return False
@@ -423,17 +424,13 @@ class Env(gym.Env):
                     return False
                 elif (bodyidA == 2 and linkIndex1 == -1 and bodyidB == 3 and linkIndex2 in self.gripper_actor_ids):
                     print("gripper contact object: ", self.finger1_contact)
-                    break
+                    continue
                     # self.finger1_contact = True
-                elif (bodyidA == 1 and linkIndex1 == -1 and bodyidB == 2 and linkIndex1 == -1):
-                    print("object on ground: ", self.finger2_contact)
-                    break
-                    # self.finger2_contact = True
-                elif (bodyidA == 1 and linkIndex1 == -1 and bodyidB == 2 and linkIndex1 == -1 and self.step_length == 1000):
+                elif (bodyidA == 1 and linkIndex1 == -1 and bodyidB == 2 and linkIndex1 == -1 and self.step_length == n):
                     print("object on ground at laststep")
                     return False
-    
-            elif not has_impulse and self.first_timestep_check_contact:
-                print("first not contact object", self.step_length)
-
+                elif (bodyidA == 1 and linkIndex1 == -1 and bodyidB == 2 and linkIndex1 == -1):
+                    print("object on ground: ", self.finger2_contact)
+                    continue
+                    # self.finger2_contact = True
         return True

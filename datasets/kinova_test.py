@@ -28,7 +28,10 @@ p.setAdditionalSearchPath(pybullet_data.getDataPath())
 # define world
 p.setGravity(0, 0, -10) # NOTE
 planeID = p.loadURDF("plane.urdf")
-
+tablaID = p.loadURDF("../data/object_urdf/objects/table.urdf",
+                            [0.0, 0.0, 0],#base position
+                            p.getQuaternionFromEuler([0, 0, 0]),#base orientation
+                            useFixedBase=True)
 robotStartPos0 = [0.1, 0, 0.2]
 robotStartPos1 = [0.1, 0, 0.4]
 robotStartPos2 = [0.05, 0, 0.6]
@@ -201,8 +204,58 @@ def control_joints_to_target(robotID, jointPose, numJoints, n_steps):
     for i in range(n_steps):
         p.stepSimulation()
         points = update_contact_points()
+        check_contact_is_valid(points)
         print("num point:", len(points))
         print("point:", points)
+
+def check_contact_is_valid(points):
+        # self.contacts = self.scene.get_contacts()
+        contacts = points
+
+        # print("all contact ", self.contacts)
+        finger1_contact = False
+        finger2_contact = False
+        first_timestep_check_contact = 0
+        step_length = 0
+
+        for c in contacts:
+            bodyidA = c.bodyUniqueIdA
+            bodyidB = c.bodyUniqueIdB
+            linkIndex1 = c.linkIndexA
+            linkIndex2 = c.linkIndexB
+            gripper_actor_ids = [6,7,8,9,10,11]
+            has_impulse = False
+
+            if (step_length == 1000):
+                print("bodyidA, linkIndex1, bodyidA, linkIndex1", bodyidA, linkIndex1, bodyidA, linkIndex1)
+            if abs(c.normalForce) > 1e-4:
+                has_impulse = True
+            if has_impulse and first_timestep_check_contact: # self.gripperJointsInfo
+                print("first contact")
+                if (bodyidA == 1 and linkIndex1 == -1 and bodyidA == 3 and linkIndex2 in gripper_actor_ids):
+                    print("contact ground")
+                    return False
+            elif has_impulse and not first_timestep_check_contact:
+                print("last contact object", step_length)
+                if (bodyidA == 1 and linkIndex1 == -1 and bodyidB == 3 and linkIndex2 in gripper_actor_ids):
+                    print("contact ground")
+                    return False
+                elif (bodyidA == 2 and linkIndex1 == -1 and bodyidB == 3 and linkIndex2 in gripper_actor_ids):
+                    print("gripper contact object: ", finger1_contact)
+                    break
+                    # self.finger1_contact = True
+                elif (bodyidA == 1 and linkIndex1 == -1 and bodyidB == 2 and linkIndex1 == -1):
+                    print("object on ground: ", finger2_contact)
+                    break
+                    # self.finger2_contact = True
+                elif (bodyidA == 1 and linkIndex1 == -1 and bodyidB == 2 and linkIndex1 == -1 and step_length == 1000):
+                    print("object on ground at laststep")
+                    return False
+    
+            elif not has_impulse and first_timestep_check_contact:
+                print("first not contact object", step_length)
+
+        return True
 
 control_joints_to_target(robotID, jointPose, numJoints-6, 500)
 

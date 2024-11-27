@@ -153,7 +153,7 @@ ground_points = cloud.extract(inliers, negative=False)
 non_ground_points = cloud.extract(inliers, negative=True)
 # 转换为array
 cam_XYZA_filter_pts = non_ground_points.to_array()
-# ''' show
+''' show
 pv.plot(
     cam_XYZA_filter_pts,
     scalars=cam_XYZA_filter_pts[:, 2],
@@ -161,7 +161,7 @@ pv.plot(
     point_size=5,
     show_scalar_bar=False,
 )
-# '''
+'''
 positive_mask = cam_XYZA_filter_pts > 0  # 创建布尔掩码
 positive_numbers = cam_XYZA_filter_pts[positive_mask] # 选择正数元素
 
