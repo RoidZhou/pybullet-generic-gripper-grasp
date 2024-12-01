@@ -1,0 +1,1 @@
+python collect_data.py yellow_cup
