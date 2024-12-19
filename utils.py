@@ -453,8 +453,10 @@ def create_orthogonal_vectors(v):
     
     # 规范化方向向量 
     u = v / np.linalg.norm(v) 
-    # 选择第二个向量 (这里选择 y 轴，你可以根据需要修改)
-    w = np.array([0, 1, 0]) 
+    # 选择第二个向量 (这里选择 y 轴，或者随机)
+    # w = np.array([0, 1, 0]) 
+    w = np.random.randn(3).astype(np.float32)
+    w /= np.linalg.norm(w)
     if np.allclose(np.cross(u,w),np.zeros(3)): #如果与Y轴平行，就选X轴 
         w = np.array([1, 0, 0]) 
         
@@ -465,7 +467,7 @@ def create_orthogonal_vectors(v):
     #重新计算第二个向量 
     m = np.cross(n, u) 
     
-    return u, m, n
+    return u, m, n  # forward, up, left
 
 def create_orthogonal_vectors2(v):
     """ 
@@ -520,7 +522,7 @@ def update_contact_points(**kwargs):
     update_scene()
     return get_contact_points(**kwargs)
 
-def control_joints_to_target(env, robotID, jointPose, numJoints, check_contact, n_steps):
+def control_joints_to_target(env, robotID, jointPose, numJoints, close_gripper=False):
     for i in range(numJoints):
         forcemaxforce = 500 if get_max_force(robotID, i) == 0 else get_max_force(robotID, i)
         p.setJointMotorControl2(bodyUniqueId=robotID,
@@ -531,4 +533,36 @@ def control_joints_to_target(env, robotID, jointPose, numJoints, check_contact, 
                                 force=forcemaxforce,
                                 positionGain=0.03,
                                 velocityGain=1)
-    env.wait_n_steps(500)
+    env.wait_n_steps(500, close_gripper)
+
+def length_to_plane(point, vector, plane_height): 
+    """ Calculates the length along a vector from a point to the ground (z=0 plane). 
+    Args: 
+        point: A NumPy array representing the 3D point [x0, y0, z0]. 
+        vector: A NumPy array representing the 3D vector [x, y, z]. 
+        
+    Returns: 
+    The length to the ground along the vector. Returns an error if the vector is parallel to the ground or if the inputs are not 3D vectors. 
+    """ 
+    
+    if point.shape != (3,) or vector.shape != (3,): 
+        raise ValueError("Inputs must be 3D vectors (NumPy arrays of shape (3,)).") 
+    x0, y0, z0 = point 
+    x, y, z = vector 
+    
+    if z == 0: 
+        raise ValueError("Vector cannot be parallel to the ground plane.") 
+    
+    t = (plane_height-z0) / z 
+    length = abs(t) * np.linalg.norm(vector) 
+    
+    return length
+
+def get_ikcal_config(robotID):
+    movable_joints = get_movable_joints(robotID)
+    min_limits = [get_joint_limits(robotID, joint)[0] for joint in movable_joints]
+    max_limits = [get_joint_limits(robotID, joint)[1] for joint in movable_joints]
+    max_velocities = [get_max_velocity(robotID, joint) for joint in movable_joints] # Range of Jacobian
+    current_conf = get_joint_positions(robotID, movable_joints)
+
+    return min_limits, max_limits, max_velocities, current_conf

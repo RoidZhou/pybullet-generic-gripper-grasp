@@ -26,7 +26,7 @@ import render_using_blender as render_utils
 
 def train(conf, train_shape_list, train_data_list, val_data_list, all_train_data_list):
     # create training and validation datasets and data loaders
-    data_features = ['pcs', 'pc_pxids', 'pc_movables', 'gripper_img_target', 'gripper_direction_camera', 'gripper_forward_direction_camera', \
+    data_features = ['pcs', 'pc_pxids', 'pc_movables', 'gripper_img_target', 'gripper_direction_camera', 'gripper_forward_direction_camera', 'grasp_width', \
             'result', 'cur_dir', 'trial_id', 'is_original']
      
     # load network model
@@ -208,7 +208,7 @@ def train(conf, train_shape_list, train_data_list, val_data_list, all_train_data
             network.train()
 
             # forward pass (including logging)
-            total_loss, whole_feats, whole_pcs, whole_pxids, whole_movables = forward(batch=batch, data_features=data_features, network=network, conf=conf, is_val=False, \
+            total_loss, whole_feats, whole_pcs, whole_pxids, whole_movables, grasp_depth = forward(batch=batch, data_features=data_features, network=network, conf=conf, is_val=False, \
                     step=train_step, epoch=epoch, batch_ind=train_batch_ind, num_batch=train_num_batch, start_time=start_time, \
                     log_console=log_console, log_tb=not conf.no_tb_log, tb_writer=train_writer, lr=network_opt.param_groups[0]['lr'])
 
@@ -232,8 +232,8 @@ def train(conf, train_shape_list, train_data_list, val_data_list, all_train_data
                     random_dirs2 = F.normalize(random_forward, dim=1).float()
 
                     # test over the entire image
-                    whole_pc_scores1 = network.inference_whole_pc(whole_feats, random_dirs1, random_dirs2)     # B x N
-                    whole_pc_scores2 = network.inference_whole_pc(whole_feats, -random_dirs1, random_dirs2)     # B x N
+                    whole_pc_scores1 = network.inference_whole_pc(whole_feats, random_dirs1, random_dirs2, grasp_depth)     # B x N
+                    whole_pc_scores2 = network.inference_whole_pc(whole_feats, -random_dirs1, random_dirs2, grasp_depth)     # B x N
 
                     # add to the sample_succ_list if wanted
                     ss_cur_dir = batch[data_features.index('cur_dir')]
@@ -318,25 +318,28 @@ def forward(batch, data_features, network, conf, \
 
     input_dirs1 = torch.cat(batch[data_features.index('gripper_direction_camera')], dim=0).to(conf.device)     # B x 3
     input_dirs2 = torch.cat(batch[data_features.index('gripper_forward_direction_camera')], dim=0).to(conf.device)     # B x 3
-    
+    grasp_width = torch.cat(batch[data_features.index('grasp_width')], dim=0).unsqueeze(1).to(conf.device)    # B x 3
+
     # prepare gt
     gt_result = torch.Tensor(batch[data_features.index('result')]).long().to(conf.device)     # B
     gripper_img_target = torch.cat(batch[data_features.index('gripper_img_target')], dim=0).to(conf.device)     # B x 3 x H x W
 
     # forward through the network
-    critic_loss_per_data, actor_coverage_loss_per_data, action_score_loss_per_data, \
-            pred_result_logits, pred_whole_feats = network(input_pcs, input_dirs1, input_dirs2, gt_result)
+    critic_loss_per_data, actor_coverage_loss_per_data, action_score_loss_per_data, width_loss_per_data, \
+            pred_result_logits, pred_whole_feats = network(input_pcs, input_dirs1, input_dirs2, grasp_width, gt_result)
  
     # for each type of loss, compute avg loss per batch
     critic_loss = critic_loss_per_data.mean()
     # for actor coverage, only train for gt_result=True pixels
     actor_coverage_loss = (actor_coverage_loss_per_data * gt_result).sum() / (gt_result.sum() + 1e-12)
     action_score_loss = action_score_loss_per_data.mean()
+    width_loss = width_loss_per_data.mean()
 
     # compute total loss
     total_loss = critic_loss * conf.loss_weight_critic + \
             actor_coverage_loss * conf.loss_weight_actor_coverage + \
-            action_score_loss * conf.loss_weight_action_score
+            action_score_loss * conf.loss_weight_action_score +\
+            width_loss * conf.loss_weight_width
 
     # display information
     data_split = 'train'
@@ -405,7 +408,7 @@ def forward(batch, data_features, network, conf, \
                 call(cmd, shell=True)
                 utils.printout(conf.flog, 'DONE')
 
-    return total_loss, pred_whole_feats.detach(), input_pcs.detach(), input_pxids.detach(), input_movables.detach()
+    return total_loss, pred_whole_feats.detach(), input_pcs.detach(), input_pxids.detach(), input_movables.detach(), grasp_width.detach()
 
 
 if __name__ == '__main__':
@@ -459,6 +462,7 @@ if __name__ == '__main__':
 
     # loss weights
     parser.add_argument('--loss_weight_critic', type=float, default=1.0, help='loss weight')
+    parser.add_argument('--loss_weight_width', type=float, default=10.0, help='loss weight')
     parser.add_argument('--loss_weight_actor_coverage', type=float, default=1.0, help='loss weight')
     parser.add_argument('--loss_weight_action_score', type=float, default=100.0, help='loss weight')
 

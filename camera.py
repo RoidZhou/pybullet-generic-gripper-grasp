@@ -14,6 +14,10 @@ from PIL import Image
 from normal_map import startConvert
 from scipy.spatial.transform import Rotation as R
 import open3d as o3d
+from utils import create_orthogonal_vectors
+import json
+import pcl
+import pcl.pcl_visualization
 
 class CameraIntrinsic(object):
     """Intrinsic parameters of a pinhole camera model.
@@ -72,7 +76,7 @@ class CameraIntrinsic(object):
         return intrinsic
 
 class Camera:
-    def __init__(self, intrinsic, near=0.01, far=20.0, size=448, fov=35, dist=5.0, fixed_position=True):
+    def __init__(self, intrinsic, near=0.01, far=20.0, size=448, fov=35, dist=5.0, phi=np.pi/5, theta=np.pi, fixed_position=True):
         self.intrinsic = intrinsic
         self.width, self.height = size, size
         self.near, self.far = near, far
@@ -84,11 +88,8 @@ class Camera:
         self.gl_proj_matrix = self.proj_matrix.flatten(order="F")
 
         if fixed_position:
-            theta = np.pi
-            phi = np.pi/10
-        else:
-            theta = np.random.random() * np.pi*2
-            phi = (np.random.random()+1) * np.pi/6
+            phi=np.pi/5
+            theta=np.pi,
         pos = np.array([dist*np.cos(phi)*np.cos(theta), \
                 dist*np.cos(phi)*np.sin(theta), \
                 dist*np.sin(phi)])
@@ -141,7 +142,6 @@ class Camera:
         gl_view_matrix = extrinsic.copy() if extrinsic is not None else np.eye(4)
         gl_view_matrix[2, :] *= -1  # flip the Z axis
         self.gl_view_matrix = gl_view_matrix.flatten(order="F")
-
         result = p.getCameraImage(
             width=self.intrinsic.width,
             height=self.intrinsic.height,
@@ -155,7 +155,7 @@ class Camera:
                 1.0 * self.far * self.near / (self.far - (self.far - self.near) * z_buffer)
         )
 
-        return Frame(rgb, depth, self.intrinsic, extrinsic), gl_view_matrix
+        return Frame(rgb, depth, self.intrinsic, extrinsic)
 
     def rgbd_2_world(self, w, h, d):
         x = (2 * w - self.width) / self.width
@@ -278,8 +278,8 @@ class Camera:
         out[id1, id2, 3] = 1 # 将 (id1, id2) 位置上的第四个维度（A）设置为1
         return out
 
-    def get_normal_map(self, relative_offset, cam):
-        rgb, depth, _, _ = update_camera_image_to_base(relative_offset, cam)
+    def get_normal_map(self, relative_offset, cam, cwT=None):
+        rgb, depth, _, _ = update_camera_image_to_base(relative_offset, cam, cwT)
         image_array = rgb[:, :, :3]
         normal_map = startConvert(image_array)
         return normal_map
@@ -402,9 +402,9 @@ class DebugAxes(object):
 
         rot3x3 = R.from_quat(orn).as_matrix()
         axis_x, axis_y, axis_z = rot3x3.T
-        self.uids[0] = p.addUserDebugLine(pos, pos + axis_x * 0.05, [1, 0, 0], replaceItemUniqueId=self.uids[0])
-        self.uids[1] = p.addUserDebugLine(pos, pos + axis_y * 0.05, [0, 1, 0], replaceItemUniqueId=self.uids[1])
-        self.uids[2] = p.addUserDebugLine(pos, pos + axis_z * 0.05, [0, 0, 1], replaceItemUniqueId=self.uids[2])
+        self.uids[0] = p.addUserDebugLine(pos, pos + axis_x * 0.15, [1, 0, 0], replaceItemUniqueId=self.uids[0])
+        self.uids[1] = p.addUserDebugLine(pos, pos + axis_y * 0.15, [0, 1, 0], replaceItemUniqueId=self.uids[1])
+        self.uids[2] = p.addUserDebugLine(pos, pos + axis_z * 0.15, [0, 0, 1], replaceItemUniqueId=self.uids[2])
 
 def showAxes(pos, axis_x, axis_y, axis_z):
     p.addUserDebugLine(pos, pos + axis_x * 0.5, [1, 0, 0]) # red
@@ -432,7 +432,6 @@ def _gl_ortho(left, right, bottom, top, near, far):
 绑定相机位置并获取更新图像
 '''
 def update_camera_image(end_state, camera):
-    cv2.namedWindow("image")
     end_pos = end_state[0]
     end_orn = end_state[1]
     wcT = _bind_camera_to_end(end_pos, end_orn)
@@ -444,32 +443,41 @@ def update_camera_image(end_state, camera):
     rgb = frame.color_image()  # 这里以显示rgb图像为例, frame还包含了深度图, 也可以转化为点云
     bgr = np.ascontiguousarray(rgb[:, :, ::-1])  # flip the rgb channel
 
-    cv2.namedWindow("image")
-    cv2.imshow("image", bgr)
-    key = cv2.waitKey(10)
-    time.sleep(10)
+    rgbd = frame.depth_image()
+    import matplotlib
+    matplotlib.use('TkAgg')  # 大小写无所谓 tkaGg ,TkAgg 都行
+    import matplotlib.pyplot as plt
 
-    return bgr
+    # plt.figure(num=1)
+    # plt.imshow(rgb)
+    # plt.show()
 
-def update_camera_image_to_base(relative_offset, camera):
+    # plt.figure(num=2)
+    # plt.imshow(rgbd)
+    # plt.show()
+
+    pc = frame.point_cloud()
+
+    return rgb, rgbd, pc, cwT
+
+def update_camera_image_to_base(relative_offset, camera, cwT=None):
 
     # end_pos = end_state[0]
     # end_orn = end_state[1]
     end_pos = [0,0,0]
     end_orn = R.from_euler('XYZ', [0, 0, 0])
     end_orn = end_orn.as_quat()
-    wcT = _bind_camera_to_base(end_pos, end_orn, relative_offset)
-    cwT = np.linalg.inv(wcT)
+    if cwT is None:
+        wcT = _bind_camera_to_base(end_pos, end_orn, relative_offset)
+        cwT = np.linalg.inv(wcT)
 
-    frame, gl_view_matrix = camera.render(cwT)
+    frame = camera.render(cwT)
     assert isinstance(frame, Frame)
 
     rgb = frame.color_image()  # 这里以显示rgb图像为例, frame还包含了深度图, 也可以转化为点云
     bgr = np.ascontiguousarray(rgb[:, :, ::-1])  # flip the rgb channel
 
     rgbd = frame.depth_image()
-
-    pc = frame.point_cloud()
 
     import matplotlib
     matplotlib.use('TkAgg')  # 大小写无所谓 tkaGg ,TkAgg 都行
@@ -482,6 +490,9 @@ def update_camera_image_to_base(relative_offset, camera):
     # plt.figure(num=2)
     # plt.imshow(rgbd)
     # plt.show()
+
+    pc = frame.point_cloud()
+
 
     return rgb, rgbd, pc, cwT
 
@@ -502,9 +513,9 @@ def _bind_camera_to_base(end_pos, end_orn_or, relative_offset):
     end_x_axis, end_y_axis, end_z_axis = end_orn.T
 
     wcT = np.eye(4)  # w: world, c: camera, ^w_c T
-    wcT[:3, 0] = -end_y_axis  # camera x axis
-    wcT[:3, 1] = -end_z_axis  # camera y axis
-    wcT[:3, 2] = end_x_axis  # camera z axis
+    # wcT[:3, 0] = -end_y_axis  # camera x axis
+    # wcT[:3, 1] = -end_z_axis  # camera y axis
+    # wcT[:3, 2] = end_x_axis  # camera z axis
 
     '''
     dist = 1
@@ -522,7 +533,23 @@ def _bind_camera_to_base(end_pos, end_orn_or, relative_offset):
     left = left / np.linalg.norm(left)
     up = np.cross(forward, left)
     fg = np.vstack([left, -up, forward]).T
-    wcT[:3, :3] = fg
+
+    # 初始化 gripper坐标系，默认gripper正方向朝向-z轴
+    robotStartOrn = p.getQuaternionFromEuler([0, 0, 0])
+    # gripper坐标系绕y轴旋转-pi/2, 使其正方向朝向+x轴
+    robotStartOrn1 = p.getQuaternionFromEuler([0, -np.pi/2, 0])
+    robotStartrot3x3 = R.from_quat(robotStartOrn).as_matrix()
+    robotStart2rot3x3 = R.from_quat(robotStartOrn1).as_matrix()
+    # gripper坐标变换
+    basegrippermatZTX = robotStartrot3x3@robotStart2rot3x3
+
+    # 以 -relative_offset 为x轴建立正交坐标系
+    forward, up, left = create_orthogonal_vectors(relative_offset)
+    fg = np.vstack([forward, up, left]).T
+
+    # gripper坐标变换
+    basegrippermatT = fg@basegrippermatZTX
+    wcT[:3, :3] = basegrippermatT
 
     camera_link.update(wcT[:3,3],R.from_matrix(wcT[:3, :3]).as_quat())
 
@@ -538,22 +565,23 @@ def _bind_camera_to_end(end_pos, end_orn_or):
     Returns:
     - wcT: shape=(4, 4), transform matrix, represents camera pose in world frame
     """
-    relative_offset = [-0.08, 0, 0.6]  # 相机原点相对于末端执行器局部坐标系的偏移量
+    relative_offset = [0.1, -0.2, 0.2]  # 相机原点相对于末端执行器局部坐标系的偏移量[x,z,y]
     end_orn = R.from_quat(end_orn_or).as_matrix()
     end_x_axis, end_y_axis, end_z_axis = end_orn.T
 
 
     wcT = np.eye(4)  # w: world, c: camera, ^w_c T
-    wcT[:3, 0] = -end_y_axis  # camera x axis
-    wcT[:3, 1] = -end_z_axis  # camera y axis
-    wcT[:3, 2] = end_x_axis  # camera z axis
+    wcT[:3, 0] = end_x_axis  # camera x axis
+    wcT[:3, 1] = end_y_axis  # camera y axis
+    wcT[:3, 2] = end_z_axis  # camera z axis
     wcT[:3, 3] = end_orn.dot(relative_offset) + end_pos  # eye position
-    fg = R.from_euler('XYZ', [-0.35, 0, 0]).as_matrix()
+    fg = R.from_euler('XYZ', [-np.pi/2, 0, 0]).as_matrix()
 
     camera_link = DebugAxes()
-    camera_link.update(wcT[:3,3],end_orn_or)
 
     wcT[:3, :3] = np.matmul(wcT[:3, :3], fg)
+    camera_link.update(wcT[:3,3], end_orn_or)
+
     return wcT
 
 def get_target_part_pose(objectID, tablaID):
@@ -567,3 +595,52 @@ def get_target_part_pose(objectID, tablaID):
     orie = cInfo[9]
 
     return pose, orie
+
+def camera_setup(camera_config, dist):
+    with open(camera_config, "r") as j:
+        config = json.load(j)
+
+    theta = np.random.random() * np.pi*2
+    phi = (np.random.random()+1) * np.pi/4
+    pose = np.array([dist*np.cos(phi)*np.cos(theta), \
+            dist*np.cos(phi)*np.sin(theta), \
+            dist*np.sin(phi)])
+    
+    return theta, phi, pose, config
+
+def ground_points_seg(cam_XYZA_pts):
+    positive_mask = cam_XYZA_pts > 0  # 创建布尔掩码
+    positive_numbers = cam_XYZA_pts[positive_mask] # 选择正数元素
+
+    cloud = pcl.PointCloud(cam_XYZA_pts.astype(np.float32))
+    # 创建SAC-IA分割对象
+    seg = cloud.make_segmenter()
+    seg.set_optimize_coefficients(True)
+    seg.set_model_type(pcl.SACMODEL_PLANE)
+    seg.set_method_type(pcl.SAC_RANSAC)
+    seg.set_distance_threshold(0.02)
+    # 执行分割
+    inliers, coefficients = seg.segment()
+    # 获取地面点云和非地面点云
+    ground_points = cloud.extract(inliers, negative=False)
+    non_ground_points = cloud.extract(inliers, negative=True)
+    # 转换为array
+    cam_XYZA_filter_pts = non_ground_points.to_array()
+
+    return cam_XYZA_filter_pts, inliers
+
+
+def rebuild_pointcloud_format(inliers, cam_XYZA_id1, cam_XYZA_id2, cam_XYZA_pts):
+
+    index_inliers_set = set(inliers)
+    cam_XYZA_filter_idx = []
+    cam_XYZA_pts_idx = np.arange(cam_XYZA_pts.shape[0])
+    for idx in range(len(cam_XYZA_pts_idx)):
+        if idx not in index_inliers_set:
+            cam_XYZA_filter_idx.append(cam_XYZA_pts_idx[idx])
+    cam_XYZA_filter_idx = np.array(cam_XYZA_filter_idx)
+    cam_XYZA_filter_idx = cam_XYZA_filter_idx.astype(int)
+    cam_XYZA_filter_id1 = cam_XYZA_id1[cam_XYZA_filter_idx]
+    cam_XYZA_filter_id2 = cam_XYZA_id2[cam_XYZA_filter_idx]
+
+    return cam_XYZA_filter_id1, cam_XYZA_filter_id2

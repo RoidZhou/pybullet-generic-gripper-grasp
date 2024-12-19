@@ -60,7 +60,8 @@ class PybulletVisionDataset(data.Dataset):
 
                 gripper_direction_camera = np.array(result_data['gripper_direction_camera'], dtype=np.float32)
                 gripper_forward_direction_camera = np.array(result_data['gripper_forward_direction_camera'], dtype=np.float32)
-                
+                grasp_width = np.array(result_data['grasp_width'], dtype=np.float32)
+
                 ori_pixel_ids = np.array(result_data['pixel_locs'], dtype=np.int32)
                 pixel_ids = np.round(np.array(result_data['pixel_locs'], dtype=np.float32) / 448 * self.img_size).astype(np.int32)
                 
@@ -69,18 +70,18 @@ class PybulletVisionDataset(data.Dataset):
                 # load original data
                 if success:
                     cur_data = (cur_dir, cur_category, cur_trial_id, \
-                            ori_pixel_ids, pixel_ids, gripper_direction_camera, gripper_forward_direction_camera, True, True)
+                            ori_pixel_ids, pixel_ids, gripper_direction_camera, gripper_forward_direction_camera, grasp_width, True, True)
                     self.true_data.append(cur_data)
                 else:
                     if not self.only_true_data: # False
                         cur_data = (cur_dir, cur_category, cur_trial_id, \
-                                ori_pixel_ids, pixel_ids, gripper_direction_camera, gripper_forward_direction_camera, True, False)
+                                ori_pixel_ids, pixel_ids, gripper_direction_camera, gripper_forward_direction_camera, grasp_width, True, False)
                         self.false_data.append(cur_data)
                 
                 # load neg-direction false data
                 if not self.no_neg_dir_data: # False
                     cur_data = (cur_dir, cur_category, cur_trial_id, \
-                            ori_pixel_ids, pixel_ids, -gripper_direction_camera, gripper_forward_direction_camera, False, False)
+                            ori_pixel_ids, pixel_ids, -gripper_direction_camera, gripper_forward_direction_camera, grasp_width, False, False)
                     self.false_data.append(cur_data)
         print("True data lenth: ", len(self.true_data))
         print("False data lenth: ", len(self.false_data))
@@ -167,20 +168,20 @@ class PybulletVisionDataset(data.Dataset):
         if self.no_true_false_equal: # False
             if index < len(self.false_data):
                 cur_dir, category, trial_id, ori_pixel_ids, pixel_ids, \
-                        gripper_direction_camera, gripper_forward_direction_camera, is_original, result = \
+                        gripper_direction_camera, gripper_forward_direction_camera, grasp_width, is_original, result = \
                             self.false_data[index]
             else:
                 cur_dir, category, trial_id, ori_pixel_ids, pixel_ids, \
-                        gripper_direction_camera, gripper_forward_direction_camera, is_original, result = \
+                        gripper_direction_camera, gripper_forward_direction_camera, grasp_width, is_original, result = \
                             self.true_data[(index - len(self.false_data)) % len(self.true_data)]
         else:
             if index % 2 == 0:
                 cur_dir, category, trial_id, ori_pixel_ids, pixel_ids, \
-                        gripper_direction_camera, gripper_forward_direction_camera, is_original, result = \
+                        gripper_direction_camera, gripper_forward_direction_camera, grasp_width, is_original, result = \
                             self.true_data[(index//2) % len(self.true_data)]
             else:
                 cur_dir, category, trial_id, ori_pixel_ids, pixel_ids, \
-                        gripper_direction_camera, gripper_forward_direction_camera, is_original, result = \
+                        gripper_direction_camera, gripper_forward_direction_camera, grasp_width, is_original, result = \
                             self.false_data[(index//2) % len(self.false_data)]
 
         # grids
@@ -220,12 +221,12 @@ class PybulletVisionDataset(data.Dataset):
                 pc = out[mask, :3] # 重组pc, 将mask拉平，三维压缩为二维，取mask true对应的点云坐标 (sum(mask), 3)
                 pcids = grid_xy[:, mask].T # 取mask为true的像素位置  (sum(mask), 2)
                 out3 = out3[mask] # 取mask为true对应的像素位置标记为true  (448, 448)
-                Image.fromarray(out3.astype(np.uint8)*255).save(os.path.join(cur_dir, 'interaction_mask2.png'))
+                # Image.fromarray(out3.astype(np.uint8)*255).save(os.path.join(cur_dir, 'interaction_mask2.png'))
                 idx = np.arange(pc.shape[0]) # 给pc设置索引  sum(mask)
                 np.random.shuffle(idx) # 随机打乱数组的元素顺序
-                while len(idx) < 30000:
+                while len(idx) < 10000:
                     idx = np.concatenate([idx, idx])
-                idx = idx[:30000-1] # 取前29999个元素
+                idx = idx[:10000-1] # 取前29999个元素
                 pc = pc[idx, :] # 重新索引pc/pcids/out3数组，pc/pcids/out3现在只包含根据随机打乱后的索引选择的子集 (sum(mask), 3)
                 pcids = pcids[idx, :]
                 out3 = out3[idx] # 重新索引 out3  sum(mask)
@@ -280,6 +281,10 @@ class PybulletVisionDataset(data.Dataset):
                 out = torch.from_numpy(gripper_forward_direction_camera).unsqueeze(0)
                 data_feats = data_feats + (out,)
              
+            elif feat == 'grasp_width':
+                out = torch.from_numpy(grasp_width).unsqueeze(0)
+                data_feats = data_feats + (out,)
+
             elif feat == 'result':
                 out = result
                 data_feats = data_feats + (out,)

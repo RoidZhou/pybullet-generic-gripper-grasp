@@ -98,7 +98,7 @@ class Critic(nn.Module):
     def __init__(self, feat_dim):
         super(Critic, self).__init__()
 
-        self.mlp1 = nn.Linear(feat_dim+3+3, feat_dim)
+        self.mlp1 = nn.Linear(feat_dim+3+3+1, feat_dim)
         self.mlp2 = nn.Linear(feat_dim, 1)
 
         self.BCELoss = nn.BCEWithLogitsLoss(reduction='none')
@@ -127,26 +127,26 @@ class Network(nn.Module):
 
     # pcs: B x N x 3 (float), with the 0th point to be the query point
     # pred_result_logits: B, whole_feats: B x F x N
-    def forward(self, pcs, dirs1, dirs2):
+    def forward(self, pcs, dirs1, dirs2, depth):
         pcs = pcs.repeat(1, 1, 2) # [32, 10000, 6]
         whole_feats = self.pointnet2(pcs) # [32, 128, 10000] 输出了 128 维的特征向量，并且这些特征向量对应于原始点云中的每个点
 
-        net = whole_feats[:, :, 0] # [32, 128] 只取第 0 个点的特征
+        net = whole_feats[:, :, 0] # [32, 128] 只取第 0 个像素的特征
 
-        input_queries = torch.cat([dirs1, dirs2], dim=1) # [32, 6]
+        input_queries = torch.cat([dirs1, dirs2, depth], dim=1) # [32, 6]
 
         pred_result_logits = self.critic(net, input_queries) # [32]
 
         return pred_result_logits, whole_feats
 
-    def inference_whole_pc(self, feats, dirs1, dirs2): # [32, 128, 10000]  [32, 3]  [32, 3]
+    def inference_whole_pc(self, feats, dirs1, dirs2, depth): # [32, 128, 10000]  [32, 3]  [32, 3]
         num_pts = feats.shape[-1] # 10000
         batch_size = feats.shape[0] # 32
 
         feats = feats.permute(0, 2, 1)  # B x N x F  [32, 10000, 128]
         feats = feats.reshape(batch_size*num_pts, -1) # [320000, 128]
 
-        input_queries = torch.cat([dirs1, dirs2], dim=-1)
+        input_queries = torch.cat([dirs1, dirs2, depth], dim=-1)
         input_queries = input_queries.unsqueeze(dim=1).repeat(1, num_pts, 1) # [32, 10000, 6]
         input_queries = input_queries.reshape(batch_size*num_pts, -1)
 
@@ -157,13 +157,13 @@ class Network(nn.Module):
 
         return soft_pred_results
 
-    def inference(self, pcs, dirs1, dirs2):
+    def inference(self, pcs, dirs1, dirs2, depth):
         pcs = pcs.repeat(1, 1, 2)
         whole_feats = self.pointnet2(pcs)
 
         net = whole_feats[:, :, 0]
 
-        input_queries = torch.cat([dirs1, dirs2], dim=1)
+        input_queries = torch.cat([dirs1, dirs2, depth], dim=1)
 
         pred_result_logits = self.critic(net, input_queries)
 

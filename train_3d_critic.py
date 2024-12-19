@@ -27,7 +27,7 @@ import render_using_blender as render_utils
 
 def train(conf, train_shape_list, train_data_list, val_data_list, all_train_data_list):
     # create training and validation datasets and data loaders
-    data_features = ['pcs', 'pc_pxids', 'pc_movables', 'gripper_img_target', 'gripper_direction_camera', 'gripper_forward_direction_camera', \
+    data_features = ['pcs', 'pc_pxids', 'pc_movables', 'gripper_img_target', 'gripper_direction_camera', 'gripper_forward_direction_camera', 'grasp_width', \
             'result', 'cur_dir','trial_id', 'is_original']
      
     # load network model
@@ -191,7 +191,7 @@ def train(conf, train_shape_list, train_data_list, val_data_list, all_train_data
             network.train()
 
             # forward pass (including logging)
-            total_loss, whole_feats, whole_pcs, whole_pxids, whole_movables = forward(batch=batch, data_features=data_features, network=network, conf=conf, is_val=False, \
+            total_loss, whole_feats, whole_pcs, whole_pxids, whole_movables, grasp_depth = forward(batch=batch, data_features=data_features, network=network, conf=conf, is_val=False, \
                     step=train_step, epoch=epoch, batch_ind=train_batch_ind, num_batch=train_num_batch, start_time=start_time, \
                     log_console=log_console, log_tb=not conf.no_tb_log, tb_writer=train_writer, lr=network_opt.param_groups[0]['lr'])
 
@@ -206,6 +206,10 @@ def train(conf, train_shape_list, train_data_list, val_data_list, all_train_data
                 network.eval()
 
                 with torch.no_grad():
+                    # calculate average of the depth
+                    # depth = torch.mean(grasp_depth).item()
+                    # grasp_depth = torch.full((32, 1),depth).float().to(conf.device)
+
                     # sample a random EE orientation
                     random_up = torch.randn(conf.batch_size, 3).float().to(conf.device) # [32, 3]
                     random_forward = torch.randn(conf.batch_size, 3).float().to(conf.device)
@@ -215,8 +219,8 @@ def train(conf, train_shape_list, train_data_list, val_data_list, all_train_data
                     random_dirs2 = F.normalize(random_forward, dim=1).float()
 
                     # test over the entire image
-                    whole_pc_scores1 = network.inference_whole_pc(whole_feats, random_dirs1, random_dirs2)     # B x N   [32, 128, 10000] 
-                    whole_pc_scores2 = network.inference_whole_pc(whole_feats, -random_dirs1, random_dirs2)     # B x N
+                    whole_pc_scores1 = network.inference_whole_pc(whole_feats, random_dirs1, random_dirs2, grasp_depth)     # B x N   [32, 128, 10000] 
+                    whole_pc_scores2 = network.inference_whole_pc(whole_feats, -random_dirs1, random_dirs2, grasp_depth)     # B x N
 
                     # add to the sample_succ_list if wanted
                     ss_cur_dir = batch[data_features.index('cur_dir')] # 149_Faucet_1_0_pushing_57
@@ -252,7 +256,7 @@ def train(conf, train_shape_list, train_data_list, val_data_list, all_train_data
 
                             # sample <X, Y> on each img
                             pp = whole_pc_score + 1e-12
-                            ptid = np.random.choice(len(whole_pc_score), 1, p=pp/pp.sum())
+                            ptid = np.random.choice(len(whole_pc_score), 1, p=pp/pp.sum()) # 按照概率分布p抽样像素点
                             X = whole_pxids[i, ptid, 0].item()
                             Y = whole_pxids[i, ptid, 1].item()
 
@@ -303,9 +307,10 @@ def forward(batch, data_features, network, conf, \
 
     input_dirs1 = torch.cat(batch[data_features.index('gripper_direction_camera')], dim=0).to(conf.device)  # 像素法线所在半球内随机采样的夹爪方向   # B x 3
     input_dirs2 = torch.cat(batch[data_features.index('gripper_forward_direction_camera')], dim=0).to(conf.device)     # B x 3
+    grasp_width = torch.cat(batch[data_features.index('grasp_width')], dim=0).unsqueeze(1).to(conf.device)     # B x 3
 
     # forward through the network
-    pred_result_logits, pred_whole_feats = network(input_pcs, input_dirs1, input_dirs2)     # B x 2, B x F x N
+    pred_result_logits, pred_whole_feats = network(input_pcs, input_dirs1, input_dirs2, grasp_width)     # B x 2, B x F x N
 
     # prepare gt
     gt_result = torch.Tensor(batch[data_features.index('result')]).long().to(conf.device)     # B = [32]
@@ -379,7 +384,7 @@ def forward(batch, data_features, network, conf, \
                 call(cmd, shell=True)
                 utils.printout(conf.flog, 'DONE')
 
-    return total_loss, pred_whole_feats.detach(), input_pcs.detach(), input_pxids.detach(), input_movables.detach()
+    return total_loss, pred_whole_feats.detach(), input_pcs.detach(), input_pxids.detach(), input_movables.detach(), grasp_width.detach()
 
 
 if __name__ == '__main__':

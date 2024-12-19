@@ -12,9 +12,9 @@ from PIL import Image
 import cv2
 import json
 from argparse import ArgumentParser
-from utils import control_joints_to_target, get_robot_ee_pose, save_h5, create_orthogonal_vectors, ContactError
+from utils import control_joints_to_target, get_robot_ee_pose, save_h5, create_orthogonal_vectors, ContactError, length_to_plane
 from sapien.core import Pose
-from env_custom import Env
+from env_kinova import Env
 from camera import ornshowAxes, Camera, CameraIntrinsic, update_camera_image_to_base, point_cloud_flter
 import pyvista as pv
 import pcl
@@ -52,6 +52,10 @@ HERE = os.path.dirname(__file__)
 ROBOT_URDF = os.path.join(HERE, 'data', 'kinova_j2s7s300', 'urdf', 'j2s7s300.urdf')
 OBJECT_URDF = os.path.join(HERE, 'datasets', 'grasp', '%s', 'model.urdf') % args.category
 
+robotStartPos0 = [0, 0, 0.2]
+robotStartPos1 = [0.1, 0, 0.4]
+robotStartPos2 = [0.1, 0, 0.6]
+
 gripper_main_control_joint_name = ["j2s7s300_joint_finger_1",
                     "j2s7s300_joint_finger_2",
                     "j2s7s300_joint_finger_3",
@@ -87,9 +91,17 @@ camera_config = "setup.json"
 with open(camera_config, "r") as j:
     config = json.load(j)
 
+dist = 0.5
+theta = np.random.random() * np.pi*2
+phi = (np.random.random()+1) * np.pi/4
+pose = np.array([dist*np.cos(phi)*np.cos(theta), \
+        dist*np.cos(phi)*np.sin(theta), \
+        dist*np.sin(phi)])
+relative_offset_pose = pose
+
 camera_intrinsic = CameraIntrinsic.from_dict(config["intrinsic"])  # 相机内参数据
 # setup camera
-cam = Camera(camera_intrinsic, dist=0.5, fixed_position=False)
+cam = Camera(camera_intrinsic, dist=0.5, phi=phi, theta=theta, fixed_position=False)
 
 # setup env
 env = Env()
@@ -109,14 +121,6 @@ wait_timesteps = 0
 while still_timesteps < 1000:
     env.step()
     still_timesteps += 1
-
-dist = 0.5
-theta = np.random.random() * np.pi*2
-phi = (np.random.random()+1) * np.pi/4
-pose = np.array([dist*np.cos(phi)*np.cos(theta), \
-        dist*np.cos(phi)*np.sin(theta), \
-        dist*np.sin(phi)])
-relative_offset_pose = pose
 
 rgb, depth, pc, cwT = update_camera_image_to_base(relative_offset_pose, cam)
 out_info['camera_metadata'] = cam.get_metadata_json()
@@ -187,8 +191,8 @@ save_h5(os.path.join(out_dir, 'cam_XYZA.h5'), \
          (cam_XYZA_filter_pts.astype(np.float32), 'pc', 'float32'), \
         ])
 
-gt_nor = cam.get_normal_map(relative_offset_pose, cam)[0]
-Image.fromarray(((gt_nor+1)/2*255).astype(np.uint8)).save(os.path.join(out_dir, 'gt_nor.png'))
+gt_nor = cam.get_normal_map(relative_offset_pose, cam, cwT)[0]
+Image.fromarray(((gt_nor)*255).astype(np.uint8)).save(os.path.join(out_dir, 'gt_nor.png'))
 
 object_link_ids = env.movable_link_ids
 
@@ -242,9 +246,6 @@ if action_direction_cam @ direction_cam > 0: # 两个向量的夹角小于90度
 out_info['gripper_direction_camera'] = action_direction_cam.tolist() # position p
 action_direction_world = action_direction_cam
 out_info['gripper_direction_world'] = action_direction_world.tolist()
-robotStartPos0 = [0.1, 0, 0.2]
-robotStartPos1 = [0.1, 0, 0.4]
-robotStartPos2 = [0.1, 0, 0.6]
 
 # compute final pose
 # 初始化 gripper坐标系，默认gripper正方向朝向-z轴
@@ -279,8 +280,16 @@ ornshowAxes(robotStartPos2, robotStartOrn3)
 rotmat = np.eye(4).astype(np.float32) # 旋转矩阵
 rotmat[:3, :3] = basegrippermatT
 
+h = length_to_plane(position_world, action_direction_world, plane_height=0.05)
+if h > 0.05:
+    d_gsp = 0.17
+else:
+    d_gsp = 0.19 - h
 # final_dist = 0.13 # ur5 grasp
-final_dist = 0.17
+final_dist = d_gsp
+### main steps
+out_info['grasp_width'] = final_dist
+
 
 final_rotmat = np.array(rotmat, dtype=np.float32)
 final_rotmat[:3, 3] = position_world - action_direction_world * final_dist # 以齐次坐标形式添加 平移向量
@@ -296,7 +305,7 @@ start_rotmat = np.array(rotmat, dtype=np.float32)
 start_rotmat[:3, 3] = position_world - action_direction_world * 0.38 # 以齐次坐标形式添加 平移向量
 start_pose = Pose().from_transformation_matrix(start_rotmat) # 变换矩阵转位置和旋转（四元数）
 out_info['start_rotmat_world'] = start_rotmat.tolist()
-ornshowAxes(start_pose.p, start_pose.q)
+# ornshowAxes(start_pose.p, start_pose.q)
 p.addUserDebugPoints([[start_rotmat[:3, 3][0], start_rotmat[:3, 3][1], start_rotmat[:3, 3][2]]], [[1, 0, 0]], pointSize=8)
 p.addUserDebugText(str("start_pose"), start_pose.p, [0, 0, 1])
 
@@ -341,14 +350,14 @@ target_link_start_pose = get_link_pose(objectID, objectLinkid) # 得到世界坐
 
 success = True
 try:
-    env.open_gripper(env.robotID, env.joints, gripper_main_control_joint_name, mimic_joint_name)
+    env.open_gripper(env.robotID, env.joints, gripper_main_control_joint_name, mimic_joint_name, 0, 0)
     env.wait_n_steps(1000)
 
     # approach
-    control_joints_to_target(env, robotID, finaljointPose, env.numJoints, env.check_contact, 1000)
+    control_joints_to_target(env, robotID, finaljointPose, env.numJoints, close_gripper = True)
     # print("move to start pose end")
     # move to the final pose
-    rgb_final_pose, depth, _, _ = update_camera_image_to_base(relative_offset_pose, cam)
+    rgb_final_pose, depth, _, _ = update_camera_image_to_base(relative_offset_pose, cam, cwT)
 
     rgb_final_pose = cv2.circle(rgb_final_pose, (y, x), radius=2, color=(255, 0, 3), thickness=5)
     Image.fromarray((rgb_final_pose).astype(np.uint8)).save(os.path.join(out_dir, 'viz_target_pose.png'))
@@ -361,12 +370,12 @@ try:
             np.array([0,0], dtype=np.float32)
     mov_dir = np.linalg.norm(mov_dir, ord=2)
     # print("mov_dir", mov_dir)
-    if mov_dir > 0.03:
+    if mov_dir > 0.13:
         success = False
         print("move start contact: ", mov_dir)
         raise ContactError
 
-    env.close_gripper(env.robotID, env.joints, gripper_main_control_joint_name, mimic_joint_name)
+    env.close_gripper(env.robotID, env.joints, gripper_main_control_joint_name, mimic_joint_name, 1, 0.7)
   
     startjointPose = p.calculateInverseKinematics(robotID, 5, start_pose.p, robotStartOrn3, lowerLimits=min_limits,
                                          upperLimits=max_limits, jointRanges=max_velocities, restPoses=current_conf)
@@ -375,7 +384,7 @@ try:
 #   activate contact checking
     # print("move end")
     env.end_checking_contact()
-    control_joints_to_target(env, robotID, startjointPose, env.numJoints, env.check_contact, 1000)
+    control_joints_to_target(env, robotID, startjointPose, env.numJoints)
     env.wait_n_steps(500)
     # print("move finish")
     
