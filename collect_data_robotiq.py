@@ -12,7 +12,7 @@ from PIL import Image
 import cv2
 import json
 from argparse import ArgumentParser
-from utils import control_joints_to_target, get_robot_ee_pose, save_h5, create_orthogonal_vectors, ContactError, length_to_plane
+from utils import control_joints_to_target, get_robot_ee_pose, save_h5, create_orthogonal_vectors, ContactError, length_to_plane, move_to_target_positions_array
 from sapien.core import Pose
 from env_robotiq import Env
 from camera import ornshowAxes, Camera, CameraIntrinsic, update_camera_image_to_base, point_cloud_flter, camera_setup
@@ -50,7 +50,8 @@ args = parser.parse_args()
 
 HERE = os.path.dirname(__file__)
 ROBOT_URDF = os.path.join(HERE, 'data', 'robotiq_85', 'urdf', 'ur5_robotiq_85.urdf')
-OBJECT_URDF = os.path.join(HERE, 'datasets', 'grasp', '%s', 'model.urdf') % args.category
+# OBJECT_URDF = os.path.join(HERE, 'datasets', 'grasp', '%s', 'model.urdf') % args.category
+OBJECT_URDF = os.path.join(HERE, '../../../../', 'media/zhou/软件/博士/具身/data_small', '%s', 'model.sdf') % args.category
 
 robotStartPos0 = [0, 0, 0.2]
 robotStartPos1 = [0.1, 0, 0.4]
@@ -244,8 +245,8 @@ flog.write('Direction Camera: %f %f %f\n' % (direction_cam[0], direction_cam[1],
 # get pixel 3D position (cam/world)
 position_world_xyz1 = cam_XYZA[x, y, :3]
 position_world = position_world_xyz1[:3]
-p.addUserDebugLine(position_world, position_world + direction_cam*1, [1, 0, 0])
-p.addUserDebugText(str("gt_nor"), position_world, [1, 0, 0])
+# p.addUserDebugLine(position_world, position_world + direction_cam*1, [1, 0, 0])
+# p.addUserDebugText(str("gt_nor"), position_world, [1, 0, 0])
 
 # direction_world = cwT[:3, :3] @ direction_cam
 # out_info['direction_world'] = direction_world.tolist()
@@ -260,6 +261,7 @@ if action_direction_cam @ direction_cam > 0: # 两个向量的夹角小于90度
 out_info['gripper_direction_camera'] = action_direction_cam.tolist() # position p
 action_direction_world = action_direction_cam
 out_info['gripper_direction_world'] = action_direction_world.tolist()
+env.action_direction_world = action_direction_world
 
 # compute final pose
 # 初始化 gripper坐标系，默认gripper正方向朝向-z轴
@@ -362,6 +364,7 @@ finaljointPose = p.calculateInverseKinematics(robotID, 5, final_pose.p, robotSta
                                          upperLimits=max_limits, jointRanges=max_velocities, restPoses=current_conf)
 
 target_link_start_pose = get_link_pose(objectID, objectLinkid) # 得到世界坐标系下物体Link的位姿
+env.object_start_pose = target_link_start_pose
 
 success = True
 try:
@@ -370,6 +373,10 @@ try:
     env.wait_n_steps(300)
 
     # approach
+    joint_indices = [0,1,2,3,4,5,6,7,8,9,10,11]
+    # numJoints = p.getNumJoints(robotID)
+    # joint_indices = [j for j in range(5) if p.getJointInfo(robotID, j)[2] == p.JOINT_REVOLUTE]
+    # move_to_target_positions_array(robotID, env, joint_indices, finaljointPose, slow_down_rate = 0.01)
     control_joints_to_target(env, robotID, finaljointPose, env.numJoints, close_gripper = True)
     # print("move to start pose end")
     # move to the final pose
@@ -399,8 +406,9 @@ try:
 #   activate contact checking
     # print("move end")
     env.end_checking_contact()
-    control_joints_to_target(env, robotID, startjointPose, env.numJoints)
-    env.wait_n_steps(500)
+    move_to_target_positions_array(env, robotID, joint_indices, startjointPose, slow_down_rate = 0.01)
+    # control_joints_to_target(env, robotID, startjointPose, env.numJoints)
+    # env.wait_n_steps(500)
     # print("move finish")
     
 except ContactError:
@@ -432,7 +440,7 @@ else:
     if success:
         print('[Successful Interaction] Done. Ctrl-C to quit.')
         ### wait forever
-        env.wait_n_steps(500)
+        # env.wait_n_steps(500)
         disconnect()
     else:
         print('[Unsuccessful Interaction] invalid gripper-object contact.')

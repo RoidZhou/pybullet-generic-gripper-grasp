@@ -7,12 +7,11 @@ import json
 from tqdm import tqdm
 from env import ClutteredPushGrasp
 from utilities import YCBModels, GoogleModels
-from camera import ornshowAxes, Camera, CameraIntrinsic, ground_points_seg, update_camera_image, point_cloud_flter, camera_setup, rebuild_pointcloud_format, update_camera_image_to_base
+from camera import ornshowAxes, Camera, CameraIntrinsic, ground_points_seg, update_camera_image, point_cloud_flter, camera_setup, rebuild_pointcloud_format, update_camera_image_to_base, piontcloud_preprocess
 from utils import get_ikcal_config, control_joints_to_target
 import pyvista as pv
 import torch
 import torch.nn.functional as F
-from pointnet2_ops.pointnet2_utils import furthest_point_sample
 from PIL import Image
 from open3D_visualizer import Open3D_visualizer
 from scipy.spatial.transform import Rotation as R
@@ -74,7 +73,7 @@ def sim_demo():
 
     HERE = os.path.dirname(__file__)
     ycb_models = GoogleModels(
-        os.path.join(HERE, '../datasets/grasp', 'plastic_banana', 'model.urdf'),
+        os.path.join(HERE, '../datasets/grasp', 'lipton_tea', 'model.urdf'),
     )
     env = ClutteredPushGrasp(ycb_models, vis=True, num_objs=5, gripper_type='85') # 0.0, -0.5, 0.8
     end_pose = p.getLinkState(env.robotID, 6)
@@ -83,10 +82,6 @@ def sim_demo():
     camera_config = "../setup.json"
     theta, phi, _, config = camera_setup(camera_config, dist)
     pose = end_pose
-    # center = np.array([0.0, -0.5, 0.8])
-    # pose[0] += center[0]
-    # pose[1] += center[1]
-    # pose[2] += center[2]
     relative_offset_pose = pose
     print("pose: ", pose)
     camera_intrinsic = CameraIntrinsic.from_dict(config["intrinsic"])  # 相机内参数据
@@ -126,35 +121,7 @@ def sim_demo():
     position_world_xyz1 = cam_XYZA[x, y, :3]
     position_world = position_world_xyz1[:3]
 
-    pt = cam_XYZA[x, y, :3]
-    ptid = np.array([x, y], dtype=np.int32)
-    mask = (cam_XYZA[:, :, 3] > 0.5)
-    mask[x, y] = False
-    pc = cam_XYZA[mask, :3]
-    grid_x, grid_y = np.meshgrid(np.arange(448), np.arange(448))
-    grid_xy = np.stack([grid_y, grid_x]).astype(np.int32)    # 2 x 448 x 448
-    pcids = grid_xy[:, mask].T
-    pc_movable = (gt_movable_link_mask > 0)[mask]
-    idx = np.arange(pc.shape[0])
-    np.random.shuffle(idx)
-    while len(idx) < 30000:
-        idx = np.concatenate([idx, idx])
-    idx = idx[:30000-1]
-    pc = pc[idx, :]
-    pc_movable = pc_movable[idx]
-    pcids = pcids[idx, :]
-    pc = np.vstack([pt, pc])
-    pcids = np.vstack([ptid, pcids])
-    pc_movable = np.append(True, pc_movable)
-    pc[:, 0] -= 5
-    pc = torch.from_numpy(pc).unsqueeze(0).to(device)
-
-    input_pcid = furthest_point_sample(pc, train_conf.num_point_per_shape).long().reshape(-1)
-    pc = pc[:, input_pcid, :3]  # 1 x N x 3 = [1, 10000, 3]
-    pc_movable = pc_movable[input_pcid.cpu().numpy()]     # N
-    pcids = pcids[input_pcid.cpu().numpy()]
-    pccolors = rgb[pcids[:, 0], pcids[:, 1]]/255
-
+    pc, pccolors = piontcloud_preprocess(x, y, cam_XYZA, rgb, train_conf, gt_movable_link_mask, device)
     # create models
     network = model_def.Network(train_conf.feat_dim)
 
@@ -202,9 +169,10 @@ def sim_demo():
             input_queries = torch.cat([dirs1, dirs2, depth], dim=1)
             net = network.critic(feats, input_queries)
             result = torch.sigmoid(net).cpu().numpy()
-            result *= pc_movable
             print("max(result) : ", np.max(result))
-            if np.max(result) > 0.92:
+            if np.max(result) > 0.85:
+                # plot_figure(up[0].cpu().numpy(), forward[0].cpu().numpy(), position_world, robotStartPos2, env)
+
                 grasp_succ = 0
                 resultcolors = cmap(result)[:, :3]
                 pccolors = pccolors * (1 - np.expand_dims(result, axis=-1)) + resultcolors * np.expand_dims(result, axis=-1)
@@ -275,7 +243,6 @@ def sim_demo():
     p.resetDebugVisualizerCamera(2.0, -270., -60., (0., 0., 0.))
     p.configureDebugVisualizer(p.COV_ENABLE_SHADOWS, 1)  # Shadows on/off
     p.addUserDebugLine([0, -0.5, 0], [0, -0.5, 1.1], [0, 1, 0])
-
 
 
 def user_control_demo():

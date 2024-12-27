@@ -335,7 +335,7 @@ def forward(batch, data_features, network, conf, \
     action_score_loss = action_score_loss_per_data.mean()
     width_loss = width_loss_per_data.mean()
 
-    # compute total loss
+    # compute total loss loss_weight_critic=1, loss_weight_actor_coverage=1, loss_weight_action_score=1000, loss_weight_width=1000 
     total_loss = critic_loss * conf.loss_weight_critic + \
             actor_coverage_loss * conf.loss_weight_actor_coverage + \
             action_score_loss * conf.loss_weight_action_score +\
@@ -432,7 +432,7 @@ if __name__ == '__main__':
     parser.add_argument('--device', type=str, default='cuda:0', help='cpu or cuda:x for using cuda on GPU number x')
     #parser.add_argument('--seed', type=int, default=3124256514, help='random seed (for reproducibility) [specify -1 means to generate a random one]')
     parser.add_argument('--seed', type=int, default=-1, help='random seed (for reproducibility) [specify -1 means to generate a random one]')
-    parser.add_argument('--log_dir', type=str, default='logs', help='exp logs directory')
+    parser.add_argument('--log_dir', type=str, default='/media/zhou/软件/博士/具身/logs', help='exp logs directory')
     parser.add_argument('--overwrite', action='store_true', default=False, help='overwrite if exp_dir exists [default: False]')
     parser.add_argument('--resume', action='store_true', default=False, help='resume if exp_dir exists [default: False]')
 
@@ -462,7 +462,7 @@ if __name__ == '__main__':
 
     # loss weights
     parser.add_argument('--loss_weight_critic', type=float, default=1.0, help='loss weight')
-    parser.add_argument('--loss_weight_width', type=float, default=10.0, help='loss weight')
+    parser.add_argument('--loss_weight_width', type=float, default=100.0, help='loss weight')
     parser.add_argument('--loss_weight_actor_coverage', type=float, default=1.0, help='loss weight')
     parser.add_argument('--loss_weight_action_score', type=float, default=100.0, help='loss weight')
 

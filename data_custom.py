@@ -45,6 +45,7 @@ class PybulletVisionDataset(data.Dataset):
         
     def load_data(self, data_list):
         bar = ProgressBar()
+        total_num = 0
         for i in bar(range(len(data_list))):
             cur_dir = data_list[i]
             cur_category, cur_trial_id  = cur_dir.split('/')[-1].rsplit('_', 1)
@@ -54,35 +55,39 @@ class PybulletVisionDataset(data.Dataset):
 
             if cur_category not in self.category_types:
                 continue
+            try:
+                with open(os.path.join(cur_dir, 'result.json'), 'r') as fin: # ../data/gt_data-train_10cats_train_data-pushing/149_Faucet_1_0_pushing_57/result.json
+                    total_num = total_num+1
+                    result_data = json.load(fin)
 
-            with open(os.path.join(cur_dir, 'result.json'), 'r') as fin: # ../data/gt_data-train_10cats_train_data-pushing/149_Faucet_1_0_pushing_57/result.json
-                result_data = json.load(fin)
+                    gripper_direction_camera = np.array(result_data['gripper_direction_camera'], dtype=np.float32)
+                    gripper_forward_direction_camera = np.array(result_data['gripper_forward_direction_camera'], dtype=np.float32)
+                    grasp_width = np.array(result_data['grasp_width'], dtype=np.float32)
 
-                gripper_direction_camera = np.array(result_data['gripper_direction_camera'], dtype=np.float32)
-                gripper_forward_direction_camera = np.array(result_data['gripper_forward_direction_camera'], dtype=np.float32)
-                grasp_width = np.array(result_data['grasp_width'], dtype=np.float32)
+                    ori_pixel_ids = np.array(result_data['pixel_locs'], dtype=np.int32)
+                    pixel_ids = np.round(np.array(result_data['pixel_locs'], dtype=np.float32) / 448 * self.img_size).astype(np.int32)
+                    
+                    success = self.check_success(result_data)
 
-                ori_pixel_ids = np.array(result_data['pixel_locs'], dtype=np.int32)
-                pixel_ids = np.round(np.array(result_data['pixel_locs'], dtype=np.float32) / 448 * self.img_size).astype(np.int32)
-                
-                success = self.check_success(result_data)
-
-                # load original data
-                if success:
-                    cur_data = (cur_dir, cur_category, cur_trial_id, \
-                            ori_pixel_ids, pixel_ids, gripper_direction_camera, gripper_forward_direction_camera, grasp_width, True, True)
-                    self.true_data.append(cur_data)
-                else:
-                    if not self.only_true_data: # False
+                    # load original data
+                    if success:
                         cur_data = (cur_dir, cur_category, cur_trial_id, \
-                                ori_pixel_ids, pixel_ids, gripper_direction_camera, gripper_forward_direction_camera, grasp_width, True, False)
+                                ori_pixel_ids, pixel_ids, gripper_direction_camera, gripper_forward_direction_camera, grasp_width, True, True)
+                        self.true_data.append(cur_data)
+                    else:
+                        if not self.only_true_data: # False
+                            cur_data = (cur_dir, cur_category, cur_trial_id, \
+                                    ori_pixel_ids, pixel_ids, gripper_direction_camera, gripper_forward_direction_camera, grasp_width, True, False)
+                            self.false_data.append(cur_data)
+                    
+                    # load neg-direction false data
+                    if not self.no_neg_dir_data: # False
+                        cur_data = (cur_dir, cur_category, cur_trial_id, \
+                                ori_pixel_ids, pixel_ids, -gripper_direction_camera, gripper_forward_direction_camera, grasp_width, False, False)
                         self.false_data.append(cur_data)
-                
-                # load neg-direction false data
-                if not self.no_neg_dir_data: # False
-                    cur_data = (cur_dir, cur_category, cur_trial_id, \
-                            ori_pixel_ids, pixel_ids, -gripper_direction_camera, gripper_forward_direction_camera, grasp_width, False, False)
-                    self.false_data.append(cur_data)
+            except FileNotFoundError:
+                break
+        print("Total data lenth: ", total_num)
         print("True data lenth: ", len(self.true_data))
         print("False data lenth: ", len(self.false_data))
 
@@ -120,7 +125,7 @@ class PybulletVisionDataset(data.Dataset):
         mov_dir /= np.linalg.norm(mov_dir)
         intended_dir = -np.array(result_data['gripper_direction_world'], dtype=np.float32)
         print("move end distance: ", intended_dir @ mov_dir)
-        success = (intended_dir @ mov_dir > 0.1) and (intended_dir @ mov_dir < 1) # 如果点积接近 1，表示两个向量几乎同向；如果接近 -1，表示几乎反向；如果接近 0，表示两个向量几乎垂直。
+        success = (intended_dir @ mov_dir > 0.01) and (intended_dir @ mov_dir < 1) # 如果点积接近 1，表示两个向量几乎同向；如果接近 -1，表示几乎反向；如果接近 0，表示两个向量几乎垂直。
 
         # elif primact_type == 'pushing-left' or primact_type == 'pulling-left':
         #     mov_dir = np.array(result_data['touch_position_world_xyz_end'], dtype=np.float32) - \

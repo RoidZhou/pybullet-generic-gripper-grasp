@@ -317,7 +317,7 @@ with torch.no_grad():
         gripper_direction_camera = pred_Rs[i:i+1, :, 0]
         gripper_forward_direction_camera = pred_Rs[i:i+1, :, 1]
         
-        result_score = network.inference_critic(pc, gripper_direction_camera, gripper_forward_direction_camera, abs_val=True).item()
+        result_score, _ = network.inference_critic(pc, gripper_direction_camera, gripper_forward_direction_camera, abs_val=True).item()
         result = (result_score > 0.95)
         if result == True:
             plot_figure(i, gripper_direction_camera[0].cpu().numpy(), gripper_forward_direction_camera[0].cpu().numpy(), position_world, result)

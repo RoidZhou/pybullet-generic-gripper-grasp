@@ -47,7 +47,8 @@ print("record_name", args.record_name)
 category, trial_id = args.record_name.rsplit('_', 1)
 HERE = os.path.dirname(__file__)
 ROBOT_URDF = os.path.join(HERE, 'data', 'robotiq_85', 'urdf', 'ur5_robotiq_85.urdf')
-OBJECT_URDF = os.path.join(HERE, 'datasets', 'grasp', '%s', 'model.urdf') % category
+# OBJECT_URDF = os.path.join(HERE, 'datasets', 'grasp', '%s', 'model.urdf') % category
+OBJECT_URDF = os.path.join(HERE, '../../../../', 'media/zhou/软件/博士/具身/data_small', '%s', 'model.sdf') % category
 
 gripper_main_control_joint_name = ["right_outer_knuckle_joint",
                                 "left_inner_knuckle_joint",
@@ -216,6 +217,7 @@ action_forward_direction_cam = np.array([float(elem) for elem in args.dir2.split
 action_direction_world = action_forward_direction_cam
 out_info['gripper_direction_camera'] = action_direction_cam.tolist() # position p
 out_info['gripper_direction_world'] = action_direction_world.tolist()
+env.action_direction_world = action_direction_world
 
 # compute final pose
 # 初始化 gripper坐标系，默认gripper正方向朝向-z轴
@@ -313,6 +315,7 @@ finaljointPose = p.calculateInverseKinematics(robotID, 5, final_pose.p, robotSta
                                          upperLimits=max_limits, jointRanges=max_velocities, restPoses=current_conf)
 
 target_link_start_pose = get_link_pose(objectID, objectLinkid) # 得到世界坐标系下物体Link的位姿
+env.object_start_pose = target_link_start_pose
 
 success = True
 try:

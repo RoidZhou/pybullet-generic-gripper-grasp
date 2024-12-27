@@ -14,8 +14,13 @@ from colors import colors
 colors = np.array(colors, dtype=np.float32)
 import matplotlib.pylab as plt
 from mpl_toolkits.mplot3d import Axes3D
+import functools
+import glob
+from collections import namedtuple
+from attrdict import AttrDict
 from subprocess import call
 import pybullet as p
+import time
 sys.path.append('../')
 from pybullet_planning import load_model, connect, wait_for_duration, get_joint_limits, get_max_velocity, get_max_force
 from pybullet_planning import  get_movable_joints, set_joint_positions, plan_joint_motion, control_joint, get_joint_positions
@@ -531,9 +536,54 @@ def control_joints_to_target(env, robotID, jointPose, numJoints, close_gripper=F
                                 targetPosition=jointPose[i],
                                 targetVelocity=0.0,
                                 force=forcemaxforce,
+                                maxVelocity = 1,
                                 positionGain=0.03,
                                 velocityGain=1)
-    env.wait_n_steps(500, close_gripper)
+    env.wait_n_steps(1000, close_gripper)
+
+def move_to_target_positions_array(env, robotId, joint_indices, target_positions, slow_down_rate, tolerance=0.1, update_interval=20, max_iter = 500):
+    """
+    Moves multiple joints of the robot to target positions using setJointMotorControlArray and position control,
+    slowing down the motion, and exits when all joints reach their target.
+    Returns True if all target positions reached, otherwise False.
+    """
+    num_joints = len(joint_indices)
+    if len(target_positions) != num_joints:
+        raise ValueError("Number of target positions must match number of joints")
+    current_positions = [p.getJointState(robotId, joint)[0] for joint in joint_indices]
+    step_counter = 0
+    i = 0
+    while True:
+        # p.stepSimulation()
+        step_counter += 1
+        i+=1
+        env.wait_n_steps(1)
+        if env.terminal_step == True:
+            break
+        if step_counter % update_interval == 0:
+             # Get current joint positions
+            # env.wait_n_steps(1)
+            # Check if the robot reached all target positions
+            if np.all(np.abs(np.array(current_positions) - np.array(target_positions)) < tolerance):
+                print("Reached all target positions!")
+                # env.wait_n_steps(1)
+                return True  # Arrived at all target positions
+
+            p.setJointMotorControlArray(
+                bodyUniqueId=robotId,
+                jointIndices=joint_indices,
+                controlMode=p.POSITION_CONTROL,
+                targetPositions=target_positions,
+                targetVelocities=[slow_down_rate] * num_joints,
+            )
+
+        current_positions = [p.getJointState(robotId, joint)[0] for joint in joint_indices]
+        if i > max_iter:
+           print("Did not reach target positions in max iteration")
+           env.wait_n_steps(1)
+           return False
+        time.sleep(1/240)
+
 
 def length_to_plane(point, vector, plane_height): 
     """ Calculates the length along a vector from a point to the ground (z=0 plane). 
@@ -566,3 +616,69 @@ def get_ikcal_config(robotID):
     current_conf = get_joint_positions(robotID, movable_joints)
 
     return min_limits, max_limits, max_velocities, current_conf
+
+
+def setup_sisbot(p, robotID, gripper_type):
+    controlJoints = ["finger_joint"]
+    jointTypeList = ["REVOLUTE", "PRISMATIC", "SPHERICAL", "PLANAR", "FIXED"]
+    numJoints = p.getNumJoints(robotID)
+    jointInfo = namedtuple("jointInfo",
+                           ["id", "name", "type", "lowerLimit", "upperLimit", "maxForce", "maxVelocity",
+                            "controllable"])
+    joints = AttrDict()
+    for i in range(numJoints):
+        info = p.getJointInfo(robotID, i)
+        jointID = info[0]
+        jointName = info[1].decode("utf-8")
+        jointType = jointTypeList[info[2]]
+        jointLowerLimit = info[8]
+        jointUpperLimit = info[9]
+        jointMaxForce = info[10]
+        jointMaxVelocity = info[11]
+        controllable = True if jointName in controlJoints else False
+        info = jointInfo(jointID, jointName, jointType, jointLowerLimit,
+                         jointUpperLimit, jointMaxForce, jointMaxVelocity, controllable)
+        # if info.type == "REVOLUTE":  # set revolute joint to static
+        #     p.setJointMotorControl2(robotID, info.id, p.VELOCITY_CONTROL, targetVelocity=0, force=0)
+        joints[info.name] = info
+
+    # explicitly deal with mimic joints
+    def controlGripper(robotID, parent, children, mul, **kwargs):
+        controlMode = kwargs.pop("controlMode")
+        if controlMode == p.POSITION_CONTROL:
+            pose = kwargs.pop("targetPosition")
+            # move parent joint
+            p.setJointMotorControl2(robotID, parent.id, controlMode, targetPosition=pose,
+                                    force=parent.maxForce, maxVelocity=parent.maxVelocity)
+            # move child joints
+            for name in children:
+                child = children[name]
+                childPose = pose * mul[child.name]
+                p.setJointMotorControl2(robotID, child.id, controlMode, targetPosition=childPose,
+                                        force=child.maxForce, maxVelocity=child.maxVelocity)
+        else:
+            raise NotImplementedError("controlGripper does not support \"{}\" control mode".format(controlMode))
+        # check if there
+        if len(kwargs) is not 0:
+            raise KeyError("No keys {} in controlGripper".format(", ".join(kwargs.keys())))
+
+    assert gripper_type in ['85', '140']
+    mimicParentName = "finger_joint"
+    if gripper_type == '85':
+        mimicChildren = {"right_outer_knuckle_joint": 1,
+                         "left_inner_knuckle_joint": 1,
+                         "right_inner_knuckle_joint": 1,
+                         "left_inner_finger_joint": -1,
+                         "right_inner_finger_joint": -1}
+    else:
+        mimicChildren = {
+            "right_outer_knuckle_joint": -1,
+            "left_inner_knuckle_joint": -1,
+            "right_inner_knuckle_joint": -1,
+            "left_inner_finger_joint": 1,
+            "right_inner_finger_joint": 1}
+    parent = joints[mimicParentName]
+    children = AttrDict((j, joints[j]) for j in joints if j in mimicChildren.keys())
+    controlRobotiqC2 = functools.partial(controlGripper, robotID, parent, children, mimicChildren)
+
+    return joints, controlRobotiqC2, controlJoints, mimicParentName

@@ -206,7 +206,7 @@ def load_pybullet(filename, fixed_base=False, scale=1., **kwargs):
             body = p.loadURDF(filename, useFixedBase=fixed_base, flags=flags,
                               globalScaling=scale, physicsClientId=CLIENT)
         elif filename.endswith('.sdf'):
-            body = p.loadSDF(filename, physicsClientId=CLIENT)
+            body = p.loadSDF(filename, physicsClientId=CLIENT)[0]
         elif filename.endswith('.xml'):
             body = p.loadMJCF(filename, physicsClientId=CLIENT)
         elif filename.endswith('.bullet'):

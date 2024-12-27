@@ -11,16 +11,16 @@ import threading
 import numpy as np
 import time
 import random
-from utils import ContactError, update_contact_points, pose2exp_coordinate, adjoint_matrix, get_joint_positions, get_movable_joints, unit_point, get_com_pose, link_from_name, CLIENT
+from utils import ContactError, setup_sisbot, update_contact_points, pose2exp_coordinate, adjoint_matrix, get_joint_positions, get_movable_joints, unit_point, get_com_pose, link_from_name, CLIENT
 import sys
 sys.path.append('../')
-from pybullet_planning import load_model, connect, wait_for_duration
+from pybullet_planning import load_model, connect, get_link_pose, get_joints, get_link_state
 from pybullet_planning import get_movable_joints, set_joint_positions, plan_joint_motion
 
 class Env(gym.Env):
     metadata = {'render.modes':['human']}
 
-    def __init__(self, object_position_offset=0.0, vis=False):
+    def __init__(self, object_position_offset=0.0, vis=False, gripper_type='85'):
         self.vis = vis
         self.current_step = 0
         self.object_position_offset = object_position_offset
@@ -33,12 +33,18 @@ class Env(gym.Env):
         self.check_contact = False
         self.hand_actor_id = self.eefID
         self.gripper_actor_ids = []
+        self.action_direction_world = []
         self.numJoints = 6
         self.step_length = 0
+        self.terminal_step = False
+        self.object_start_pose = []
         self.gripper_range = [0, 0.085]
         connect(use_gui=True)
         p.setAdditionalSearchPath(pybullet_data.getDataPath())
         self.constraints_thread = threading.Thread(target=self.gripper_step)
+        if gripper_type not in ('85', '140'):
+            raise NotImplementedError('Gripper %s not implemented.' % gripper_type)
+        self.gripper_type = gripper_type
         # connect to engine servers
         # self.physicsClient = p.connect(p.GUI if self.vis else p.DIRECT)
         # add search path for loadURDF
@@ -55,16 +61,17 @@ class Env(gym.Env):
                             useFixedBase=True)
         self.robotStartPos = [0, 0, 0.35]
         self.robotStartOrn = p.getQuaternionFromEuler([0, 0, 1.57])
-
+        self.gripper_open_limit = (0.0, 0.085)
+        
     def __post_load__(self):
         # To control the gripper
-        mimic_parent_name = 'finger_joint'
-        mimic_children_names = {'right_outer_knuckle_joint': 1,
+        self.mimic_parent_name = 'finger_joint'
+        self.mimic_children_names = {'right_outer_knuckle_joint': 1,
                                 'left_inner_knuckle_joint': 1,
                                 'right_inner_knuckle_joint': 1,
                                 'left_inner_finger_joint': -1,
                                 'right_inner_finger_joint': -1}
-        self.__setup_mimic_joints__(mimic_parent_name, mimic_children_names)
+        self.__setup_mimic_joints__(self.mimic_parent_name, self.mimic_children_names)
 
     def __setup_mimic_joints__(self, mimic_parent_name, mimic_children_names):
         self.mimic_parent_id = [self.joints[joint].id for joint in self.joints if joint == mimic_parent_name][0]
@@ -87,14 +94,43 @@ class Env(gym.Env):
         p.setJointMotorControl2(self.robotID, self.mimic_parent_id, p.POSITION_CONTROL, targetPosition=open_angle,
                                 force=list(self.joints.values())[self.mimic_parent_id].maxForce, maxVelocity=list(self.joints.values())[self.mimic_parent_id].maxVelocity)
 
+    def move_gripper3(self, gripper_opening_length: float, step: int = 120):
+        gripper_opening_length = np.clip(gripper_opening_length, *self.gripper_open_limit)
+        gripper_opening_angle = 0.715 - math.asin((gripper_opening_length - 0.010) / 0.1143)  # angle calculation
+        for _ in range(step):
+            self.controlGripper(controlMode=p.POSITION_CONTROL, targetPosition=gripper_opening_angle)
+            self.step_simulation()
+
+    def close_gripper3(self, step: int = 120, check_contact: bool = False) -> bool:
+        # Get initial gripper open position
+        initial_position = p.getJointState(self.robotID, self.joints[self.mimic_parent_name].id)[0]
+        initial_position = math.sin(0.715 - initial_position) * 0.1143 + 0.010
+        for step_idx in range(1, step):
+            current_target_open_length = initial_position - step_idx / step * initial_position
+
+            self.move_gripper3(current_target_open_length, 1)
+            if current_target_open_length < 1e-5:
+                return False
+
+            # time.sleep(1 / 120)
+            # if check_contact and self.gripper_contact():
+            #     # print(p.getJointState(self.robotID, self.joints['left_inner_finger_pad_joint'].id))
+            #     # self.move_gripper(current_target_open_length - 0.005)
+            #     # print(p.getJointState(self.robotID, self.joints['left_inner_finger_pad_joint'].id))
+            #     # self.controlGripper(stop=True)
+            #     return True
+        return False
+
     def close_gripper2(self):
         self.move_gripper(self.gripper_range[0])
-        self.wait_n_steps(500)
+        self.wait_n_steps(1000)
 
     def open_gripper2(self):
         self.move_gripper(self.gripper_range[1])
         self.wait_n_steps(500)
 
+    def open_gripper3(self, step: int = 1000):
+        self.move_gripper3(0.085, step)
 
     def step(self):
         self.current_step += 1
@@ -106,12 +142,36 @@ class Env(gym.Env):
         """
         p.stepSimulation()
 
+    def check_move_direction(self):
+        objectLinkid = -1
+        object_pose = self.object_start_pose[0]
+        target_link_pose = get_link_pose(self.objectID, objectLinkid) # 得到世界坐标系下物体Link的位姿
+        mov_dir = np.array(target_link_pose[0], dtype=np.float32) - np.array(object_pose, dtype=np.float32)
+        move_dist = np.linalg.norm(mov_dir)
+        mov_dir /= np.linalg.norm(mov_dir)
+        intended_dir = -np.array(self.action_direction_world, dtype=np.float32)
+        success = (intended_dir @ mov_dir > 0.05) and (intended_dir @ mov_dir < 1) # 如果点积接近 1，表示两个向量几乎同向；如果接近 -1，表示几乎反向；如果接近 0，表示两个向量几乎垂直。
+        # print("move_dist: , success: , ", move_dist, success, intended_dir @ mov_dir)
+        # if move_dist > 0.01 and success:
+        #     if (self.first_res):
+        #         return True
+        if(move_dist > 0.01 and success):
+            # self.first_res = True
+            return True
+        else:
+            self.first_res = False
+            return False
+
     def wait_n_steps(self, n: int, close_gripper = False):
         for i in range(n):
             self.step_simulation()
             if self.check_contact:
                 points = update_contact_points()
                 contactSuccess = self.check_contact_is_valid(points, n)
+                res = self.check_move_direction()
+                if res == True:
+                    self.terminal_step = True
+                    break
                 # print("num point:", i)
                 if not ContactError and close_gripper:
                     break
@@ -151,7 +211,8 @@ class Env(gym.Env):
     def load_robot(self, model_path, pose, orne):
         self.robotID = load_model(model_path, (pose, orne), fixed_base=True)
         self.eefID = link_from_name(self.robotID, self.endeffort_link)
-        
+        # self.joints, self.controlGripper, self.controlJoints, self.mimicParentName = setup_sisbot(p, self.robotID, self.gripper_type)
+
         return self.robotID
         
     def set_target_object_part_actor_id(self, actor_id, custom=True):

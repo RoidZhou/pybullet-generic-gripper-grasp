@@ -15,6 +15,7 @@ from normal_map import startConvert
 from scipy.spatial.transform import Rotation as R
 import open3d as o3d
 from utils import create_orthogonal_vectors
+from pointnet2_ops.pointnet2_utils import furthest_point_sample
 import json
 import pcl
 import pcl.pcl_visualization
@@ -98,7 +99,7 @@ class Camera:
         left = left / np.linalg.norm(left)
         up = np.cross(forward, left)
         #视图矩阵：计算世界坐标系中的物体在摄像机坐标系下的坐标
-        print("pose", pos)
+        # print("pose", pos)
         self.view_matrix = p.computeViewMatrix(pos,
                                                forward,
                                                up)
@@ -106,8 +107,8 @@ class Camera:
         self.projection_matrix = p.computeProjectionMatrixFOV(self.fov, aspect, self.near, self.far)
         _view_matrix = np.array(self.view_matrix).reshape((4, 4), order='F')
         _projection_matrix = np.array(self.projection_matrix).reshape((4, 4), order='F')
-        print("self.projection_matrix ", self.projection_matrix)
-        print("self._view_matrix ", _view_matrix)
+        # print("self.projection_matrix ", self.projection_matrix)
+        # print("self._view_matrix ", _view_matrix)
         #@ ：相乘运算，inv：计算逆矩阵
         self.tran_pix_world = np.linalg.inv(_projection_matrix @ _view_matrix)
         
@@ -414,7 +415,7 @@ def showAxes(pos, axis_x, axis_y, axis_z):
 def ornshowAxes(pos, orn):
     rot3x3 = R.from_quat(orn).as_matrix()
     axis_x, axis_y, axis_z = rot3x3.T
-    print("axis_x, axis_y, axis_z ", axis_x, axis_y, axis_z)
+    # print("axis_x, axis_y, axis_z ", axis_x, axis_y, axis_z)
     p.addUserDebugLine(pos, pos + axis_x * 0.5, [1, 0, 0], lineWidth=2) # red
     p.addUserDebugLine(pos, pos + axis_y * 0.5, [0, 1, 0], lineWidth=2) # green
     p.addUserDebugLine(pos, pos + axis_z * 0.5, [0, 0, 1], lineWidth=2) # blue
@@ -460,6 +461,12 @@ def update_camera_image(end_state, camera):
 
     return rgb, rgbd, pc, cwT
 
+def get_rs_pc(rgb, rgbd, intrinsic):
+    frame = Frame(rgb, rgbd, intrinsic)
+    pc = frame.point_cloud()
+    
+    return pc
+
 def update_camera_image_to_base(relative_offset, camera, cwT=None):
 
     # end_pos = end_state[0]
@@ -479,9 +486,9 @@ def update_camera_image_to_base(relative_offset, camera, cwT=None):
 
     rgbd = frame.depth_image()
 
-    import matplotlib
-    matplotlib.use('TkAgg')  # 大小写无所谓 tkaGg ,TkAgg 都行
-    import matplotlib.pyplot as plt
+    # import matplotlib
+    # matplotlib.use('TkAgg')  # 大小写无所谓 tkaGg ,TkAgg 都行
+    # import matplotlib.pyplot as plt
 
     # plt.figure(num=1)
     # plt.imshow(rgb)
@@ -596,7 +603,7 @@ def get_target_part_pose(objectID, tablaID):
 
     return pose, orie
 
-def camera_setup(camera_config, dist):
+def camera_setup(camera_config, dist=0):
     with open(camera_config, "r") as j:
         config = json.load(j)
 
@@ -644,3 +651,35 @@ def rebuild_pointcloud_format(inliers, cam_XYZA_id1, cam_XYZA_id2, cam_XYZA_pts)
     cam_XYZA_filter_id2 = cam_XYZA_id2[cam_XYZA_filter_idx]
 
     return cam_XYZA_filter_id1, cam_XYZA_filter_id2
+
+def piontcloud_preprocess(x, y, cam_XYZA, rgb, train_conf, gt_movable_link_mask, device):
+    pt = cam_XYZA[x, y, :3]
+    ptid = np.array([x, y], dtype=np.int32)
+    mask = (cam_XYZA[:, :, 3] > 0.5)
+    mask[x, y] = False
+    pc = cam_XYZA[mask, :3]
+    grid_x, grid_y = np.meshgrid(np.arange(448), np.arange(448))
+    grid_xy = np.stack([grid_y, grid_x]).astype(np.int32)    # 2 x 448 x 448
+    pcids = grid_xy[:, mask].T
+    pc_movable = (gt_movable_link_mask > 0)[mask]
+    idx = np.arange(pc.shape[0])
+    np.random.shuffle(idx)
+    while len(idx) < 30000:
+        idx = np.concatenate([idx, idx])
+    idx = idx[:30000-1]
+    pc = pc[idx, :]
+    pc_movable = pc_movable[idx]
+    pcids = pcids[idx, :]
+    pc = np.vstack([pt, pc])
+    pcids = np.vstack([ptid, pcids])
+    pc_movable = np.append(True, pc_movable)
+    pc[:, 0] -= 5
+    pc = torch.from_numpy(pc).unsqueeze(0).to(device)
+
+    input_pcid = furthest_point_sample(pc, train_conf.num_point_per_shape).long().reshape(-1)
+    pc = pc[:, input_pcid, :3]  # 1 x N x 3 = [1, 10000, 3]
+    pc_movable = pc_movable[input_pcid.cpu().numpy()]     # N
+    pcids = pcids[input_pcid.cpu().numpy()]
+    pccolors = rgb[pcids[:, 0], pcids[:, 1]]/255
+
+    return pc, pccolors

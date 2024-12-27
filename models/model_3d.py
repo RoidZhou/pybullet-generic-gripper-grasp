@@ -104,16 +104,19 @@ class GraspDepth(nn.Module):
 
     def forward(self, feats):
         # features = F.relu(self.bn1(self.conv1(feats)))
-        # grasp_width = self.conv2(features)
+        # grasp_depth = self.conv2(features)
         net = F.leaky_relu(self.mlp1(feats)) # [3200, 128]
-        grasp_width = self.mlp2(net)
+        grasp_depth = self.mlp2(net)
 
-        return grasp_width
+        return grasp_depth
     
     def compute_loss(self, pred_w, gt_w):
-        width_loss = F.mse_loss(pred_w, gt_w)
-
-        return width_loss
+        # width_loss = F.mse_loss(pred_w, gt_w)
+        # 计算每个元素的平方误差
+        squared_errors = (pred_w - gt_w) ** 2
+        # 对每个样本计算平均 MSE
+        mse_per_sample_loss = squared_errors.mean(dim=1)
+        return mse_per_sample_loss
         
 
 class ActionScore(nn.Module):
@@ -222,7 +225,7 @@ class Network(nn.Module):
         self.critic_copy = Critic(feat_dim)
         self.actor = Actor(feat_dim, rv_dim)
         self.action_score = ActionScore(feat_dim)
-        self.grasp_width = GraspDepth(feat_dim)
+        self.grasp_depth = GraspDepth(feat_dim)
 
     # pcs: B x N x 3 (float), with the 0th point to be the query point
     def forward(self, pcs, dirs1, dirs2, gt_width, gt_result): # [32, 10000, 3]  [32, 3]  [32, 3]  [32]
@@ -239,10 +242,10 @@ class Network(nn.Module):
         net = whole_feats[:, :, 0]  # B x F  [32, 128]
 
         # grasp depth
-        pred_width = self.grasp_width(net)
-        width_loss_per_data = self.grasp_width.compute_loss(pred_width, gt_width)
+        grasp_depth = self.grasp_depth(net)
+        width_loss_per_data = self.grasp_depth.compute_loss(grasp_depth, gt_width)
 
-        input_s6d = torch.cat([dirs1, dirs2, pred_width.detach()], dim=1) # [32, 6]
+        input_s6d = torch.cat([dirs1, dirs2, grasp_depth.detach()], dim=1) # [32, 6]
         input_queries = input_s6d
 
         # train critic -> action score loss 给动作打分
@@ -262,7 +265,7 @@ class Network(nn.Module):
         actor_coverage_loss_per_data = actor_coverage_loss_per_rv.min(dim=1)[0] # 选择最小覆盖损失
 
         with torch.no_grad():
-            expanded_width = pred_width.repeat(self.rv_cnt,1).detach()
+            expanded_width = grasp_depth.repeat(self.rv_cnt,1).detach()
             expanded_queries = expanded_pred_s6d # [3200]
             expanded_queries = torch.cat([expanded_queries, expanded_width], dim=-1)
             expanded_proposal_results_logits = self.critic_copy(expanded_net.detach(), expanded_queries) # [3200]
@@ -309,12 +312,12 @@ class Network(nn.Module):
         pred_action_scores = pred_action_scores.reshape(batch_size, num_point)
         return pred_action_scores
 
-    def inference_actor(self, pcs):
+    def inference_actor(self, pcs, pxidx=0):
         pcs = pcs.repeat(1, 1, 2)
         batch_size = pcs.shape[0]
 
         whole_feats = self.pointnet2(pcs)
-        net = whole_feats[:, :, 0]
+        net = whole_feats[:, :, pxidx]
 
         rvs = torch.randn(batch_size, self.rv_cnt, self.rv_dim).float().to(net.device)
         expanded_net = net.unsqueeze(dim=1).repeat(1, self.rv_cnt, 1).reshape(batch_size*self.rv_cnt, -1)
@@ -323,19 +326,22 @@ class Network(nn.Module):
         pred_s6d = expanded_pred_s6d.reshape(batch_size, self.rv_cnt, 6)
         return pred_s6d
     
-    def inference_critic(self, pcs, dirs1, dirs2, abs_val=False):
+    def inference_critic(self, pcs, dirs1, dirs2, pxidx=0, abs_val=False, test_batch=False):
         pcs = pcs.repeat(1, 1, 2)
         whole_feats = self.pointnet2(pcs)
-        net = whole_feats[:, :, 0]
+        net = whole_feats[:, :, pxidx]
 
         # grasp depth
-        pred_width = self.grasp_width(net)
+        grasp_depth = self.grasp_depth(net)
+        if test_batch:
+            grasp_depth = grasp_depth.repeat(self.rv_cnt, 1)
+            net = net.repeat(self.rv_cnt, 1)
 
-        input_queries = torch.cat([dirs1, dirs2, pred_width], dim=1)
+        input_queries = torch.cat([dirs1, dirs2, grasp_depth], dim=1)
         pred_result_logits = self.critic(net, input_queries)
         if abs_val:
             pred_results = torch.sigmoid(pred_result_logits)
         else:
             pred_results = (pred_result_logits > 0)
-        return pred_results
+        return pred_results, grasp_depth
     
