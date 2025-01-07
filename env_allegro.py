@@ -12,7 +12,7 @@ import random
 from utils import ContactError, update_contact_points, pose2exp_coordinate, adjoint_matrix, get_joint_positions, get_movable_joints, unit_point, get_com_pose, link_from_name, CLIENT
 import sys
 sys.path.append('../')
-from pybullet_planning import load_model, connect, wait_for_duration
+from pybullet_planning import load_model, connect, wait_for_duration, get_link_pose
 from pybullet_planning import get_movable_joints, set_joint_positions, plan_joint_motion
 
 class Env(gym.Env):
@@ -31,8 +31,11 @@ class Env(gym.Env):
         self.check_contact = False
         self.hand_actor_id = self.eefID
         self.gripper_actor_ids = []
+        self.action_direction_world = []
         self.numJoints = 6
         self.step_length = 0
+        self.terminal_step = False
+        self.object_start_pose = []
         connect(use_gui=True)
         p.setAdditionalSearchPath(pybullet_data.getDataPath())
         
@@ -64,13 +67,36 @@ class Env(gym.Env):
         """
         p.stepSimulation()
 
+    def check_move_direction(self):
+        objectLinkid = -1
+        object_pose = self.object_start_pose[0]
+        target_link_pose = get_link_pose(self.objectID, objectLinkid) # 得到世界坐标系下物体Link的位姿
+        mov_dir = np.array(target_link_pose[0], dtype=np.float32) - np.array(object_pose, dtype=np.float32)
+        move_dist = np.linalg.norm(mov_dir)
+        mov_dir /= np.linalg.norm(mov_dir)
+        intended_dir = -np.array(self.action_direction_world, dtype=np.float32)
+        success = (intended_dir @ mov_dir > 0.05) and (intended_dir @ mov_dir < 1) # 如果点积接近 1，表示两个向量几乎同向；如果接近 -1，表示几乎反向；如果接近 0，表示两个向量几乎垂直。
+        # print("move_dist: , success: , ", move_dist, success, intended_dir @ mov_dir)
+        # if move_dist > 0.01 and success:
+        #     if (self.first_res):
+        #         return True
+        if(move_dist > 0.01 and success):
+            # self.first_res = True
+            return True
+        else:
+            self.first_res = False
+            return False
+
     def wait_n_steps(self, n: int, close_gripper = False):
         for i in range(n):
             self.step_simulation()
             if self.check_contact:
                 points = update_contact_points()
                 contactSuccess = self.check_contact_is_valid(points, n)
-                # print("num point:", i)
+                res = self.check_move_direction()
+                if res == True:
+                    self.terminal_step = True
+                    break
                 if not ContactError and close_gripper:
                     break
                 if not contactSuccess:

@@ -12,10 +12,10 @@ import cv2
 from open3D_visualizer import Open3D_visualizer
 from scipy.spatial.transform import Rotation as R
 from sapien.core import Pose
-from env_robotiq import Env
+from env_kinova import Env
 from camera import Camera
 # from robots.panda_robot import Robot
-from camera import ornshowAxes, Camera, CameraIntrinsic, update_camera_image_to_base, point_cloud_flter, ground_points_seg, rebuild_pointcloud_format, piontcloud_preprocess
+from camera import ornshowAxes, Camera, CameraIntrinsic, update_camera_image_to_base, point_cloud_flter, ground_points_seg, rebuild_pointcloud_format
 from utils import length_to_plane, get_robot_ee_pose, save_h5, create_orthogonal_vectors, ContactError
 import json
 from pointnet2_ops.pointnet2_utils import furthest_point_sample
@@ -29,7 +29,7 @@ from pybullet_planning import get_movable_joints, set_joint_positions, get_joint
 cmap = plt.cm.get_cmap("jet")
 robotStartPos2 = [0.1, 0, 0.6]
 
-def plot_figure(up, forward, position_world, cwT):
+def plot_figure(up, forward, position_world):
     # cam to world
     # up = mat33 @ up
     # forward = mat33 @ forward
@@ -42,17 +42,16 @@ def plot_figure(up, forward, position_world, cwT):
     robotStart2rot3x3 = R.from_quat(robotStartOrn1).as_matrix()
     # gripper坐标变换
     basegrippermatZTX = robotStartrot3x3@robotStart2rot3x3
-    
-    relative_forward = -forward
+
     # 计算朝向坐标
-    relative_forward = np.array(relative_forward, dtype=np.float32)
+    forward = np.array(forward, dtype=np.float32)
     up = np.array(up, dtype=np.float32)
-    left = np.cross(relative_forward, up)
+    left = np.cross(forward, up)
     left /= np.linalg.norm(left)
     
-    up = np.cross(left, relative_forward)
+    up = np.cross(left, forward)
     up /= np.linalg.norm(up)
-    fg = np.vstack([relative_forward, up, left]).T
+    fg = np.vstack([forward, up, left]).T
 
     # gripper坐标变换
     basegrippermatT = fg@basegrippermatZTX
@@ -67,7 +66,7 @@ def plot_figure(up, forward, position_world, cwT):
     start_pose = Pose().from_transformation_matrix(start_rotmat) # 变换矩阵转位置和旋转（四元数）
     robotID = env.load_robot(ROBOT_URDF, start_pose.p, robotStartOrn3)
 
-    rgb_final_pose, depth, _, _ = update_camera_image_to_base(relative_offset_pose, cam, cwT)
+    rgb_final_pose, depth, _, _ = update_camera_image_to_base(relative_offset_pose, cam)
 
     rgb_final_pose = cv2.circle(rgb_final_pose, (y, x), radius=2, color=(255, 0, 3), thickness=5)
     Image.fromarray((rgb_final_pose).astype(np.uint8)).save(os.path.join(result_dir, 'viz_target_pose.png'))
@@ -83,9 +82,8 @@ parser.add_argument('--overwrite', action='store_true', default=False, help='ove
 eval_conf = parser.parse_args()
 
 HERE = os.path.dirname(__file__)
-ROBOT_URDF = os.path.join(HERE, 'data', 'robotiq_85', 'urdf', 'ur5_robotiq_85.urdf')
-# OBJECT_URDF = os.path.join(HERE, 'datasets', 'grasp', 'plastic_apple', 'model.urdf')
-OBJECT_URDF = os.path.join(HERE, 'datasets/data_10_15', 'Black_Elderberry_Syrup_54_oz_Gaia_Herbs', 'model.sdf')
+ROBOT_URDF = os.path.join(HERE, 'data', 'kinova_j2s7s300', 'urdf', 'j2s7s300.urdf')
+OBJECT_URDF = os.path.join(HERE, 'datasets', 'grasp', 'yellow_cup', 'model.urdf')
 
 # load train config
 train_conf = torch.load(os.path.join('logs', eval_conf.exp_name, 'conf.pth'))
@@ -175,7 +173,6 @@ pv.plot(
     show_scalar_bar=False,
 )
 # '''
-
 cam_XYZA_filter_id1, cam_XYZA_filter_id2 = rebuild_pointcloud_format(inliers, cam_XYZA_id1, cam_XYZA_id2, cam_XYZA_pts)
 # 将计算出的三维点信息组织成一个矩阵格式。
 cam_XYZA = cam.compute_XYZA_matrix(cam_XYZA_filter_id1, cam_XYZA_filter_id2, cam_XYZA_filter_pts, depth.shape[0], depth.shape[1])
@@ -188,13 +185,41 @@ x, y = cam_XYZA_filter_id1[idx_], cam_XYZA_filter_id2[idx_]
 position_world_xyz1 = cam_XYZA[x, y, :3]
 position_world = position_world_xyz1[:3]
 
-pc, pccolors = piontcloud_preprocess(x, y, cam_XYZA, rgb, train_conf, gt_movable_link_mask, device)
+pt = cam_XYZA[x, y, :3]
+ptid = np.array([x, y], dtype=np.int32)
+mask = (cam_XYZA[:, :, 3] > 0.5)
+mask[x, y] = False
+pc = cam_XYZA[mask, :3]
+grid_x, grid_y = np.meshgrid(np.arange(448), np.arange(448))
+grid_xy = np.stack([grid_y, grid_x]).astype(np.int32)    # 2 x 448 x 448
+pcids = grid_xy[:, mask].T
+pc_movable = (gt_movable_link_mask > 0)[mask]
+idx = np.arange(pc.shape[0])
+np.random.shuffle(idx)
+while len(idx) < 30000:
+    idx = np.concatenate([idx, idx])
+idx = idx[:30000-1]
+pc = pc[idx, :]
+pc_movable = pc_movable[idx]
+pcids = pcids[idx, :]
+pc = np.vstack([pt, pc])
+pcids = np.vstack([ptid, pcids])
+pc_movable = np.append(True, pc_movable)
+pc[:, 0] -= 5
+pc = torch.from_numpy(pc).unsqueeze(0).to(device)
+
+input_pcid = furthest_point_sample(pc, train_conf.num_point_per_shape).long().reshape(-1)
+pc = pc[:, input_pcid, :3]  # 1 x N x 3 = [1, 10000, 3]
+pc_movable = pc_movable[input_pcid.cpu().numpy()]     # N
+pcids = pcids[input_pcid.cpu().numpy()]
+pccolors = rgb[pcids[:, 0], pcids[:, 1]]/255
+Image.fromarray((rgb).astype(np.uint8)).save(os.path.join(result_dir, 'rgb.png'))
 
 # push through unet
 feats = network.pointnet2(pc.repeat(1, 1, 2))[0].permute(1, 0)    # N x F = 10000 x 128
 # robotID = env.load_robot(ROBOT_URDF, start_pose.p, robotStartOrn3)
-
 grasp_succ = 1
+
 # sample a random direction to query
 while grasp_succ:
     # sample a random direction to query
@@ -205,24 +230,23 @@ while grasp_succ:
 
     up = gripper_direction_camera
     forward = gripper_forward_direction_camera
-    # left = torch.cross(forward, up)
-    # left = F.normalize(left, dim=1)
+    left = torch.cross(forward, up)
+    left = F.normalize(left, dim=1)
 
-    # up = torch.cross(left, forward)
-    # up = F.normalize(up, dim=1)
+    up = torch.cross(left, forward)
+    up = F.normalize(up, dim=1)
 
     h = length_to_plane(position_world, gripper_forward_direction_camera[0,:].cpu(), plane_height=0.05)
     if h > 0.05:
-        d_gsp = 0.13
+        d_gsp = 0.17
     else:
-        d_gsp = 0.15 - h
+        d_gsp = 0.19 - h
     # final_dist = 0.13 # ur5 grasp
     final_dist = d_gsp
     depth = torch.full((train_conf.num_point_per_shape, 1),final_dist).float().to(device)
-    # plot_figure(up[0].cpu().numpy(), forward[0].cpu().numpy(), position_world, cwT) # draw all pose
 
-    dirs2 = up.repeat(train_conf.num_point_per_shape, 1)
     dirs1 = forward.repeat(train_conf.num_point_per_shape, 1)
+    dirs2 = up.repeat(train_conf.num_point_per_shape, 1)
 
     # infer for all pixels
     with torch.no_grad():
@@ -231,19 +255,17 @@ while grasp_succ:
         result = torch.sigmoid(net).cpu().numpy()
         print("max(result) : ", np.max(result))
         if np.max(result) > 0.95:
-            plot_figure(up[0].cpu().numpy(), forward[0].cpu().numpy(), position_world, cwT)
-
+            plot_figure(up[0].cpu().numpy(), forward[0].cpu().numpy(), position_world)
+            
             grasp_succ = 0
-            # result *= pc_movable
-
             fn = os.path.join(result_dir, 'pred')
             resultcolors = cmap(result)[:, :3]
             pccolors = pccolors * (1 - np.expand_dims(result, axis=-1)) + resultcolors * np.expand_dims(result, axis=-1)
             o3dvis = Open3D_visualizer(pc[0].cpu().numpy())
             o3dvis.add_colors_map(pccolors)
-            # utils.export_pts_color_pts(fn,  pc[0].cpu().numpy(), pccolors)
-            # utils.export_pts_color_obj(fn,  pc[0].cpu().numpy(), pccolors)
-            # utils.render_pts_label_png(fn,  pc[0].cpu().numpy(), result)
+        # utils.export_pts_color_pts(fn,  pc[0].cpu().numpy(), pccolors)
+        # utils.export_pts_color_obj(fn,  pc[0].cpu().numpy(), pccolors)
+        # utils.render_pts_label_png(fn,  pc[0].cpu().numpy(), result)
 
 # close env
 disconnect()

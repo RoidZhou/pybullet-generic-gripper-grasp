@@ -54,7 +54,7 @@ class GraspDataGen(object):
         print("start collect.py")
         for todo in todos:
             if todo[0] == 'COLLECT':
-                cmd = 'python collect_data_robotiq.py %s --out_dir %s --trial_id %d --random_seed %d --no_gui' \
+                cmd = 'python collect_data_allegro_4f.py %s --out_dir %s --trial_id %d --random_seed %d --no_gui' \
                         % (todo[1], todo[2], todo[3], todo[4])
                 folder_name = todo[2]
                 job_name = '%s_%s' % (todo[1], todo[3])

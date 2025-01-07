@@ -12,7 +12,7 @@ import cv2
 from open3D_visualizer import Open3D_visualizer
 from scipy.spatial.transform import Rotation as R
 from sapien.core import Pose
-from env_robotiq import Env
+from env_inspired_hand import Env
 from camera import Camera
 # from robots.panda_robot import Robot
 from camera import ornshowAxes, Camera, CameraIntrinsic, update_camera_image_to_base, point_cloud_flter, ground_points_seg, rebuild_pointcloud_format, piontcloud_preprocess
@@ -29,7 +29,7 @@ from pybullet_planning import get_movable_joints, set_joint_positions, get_joint
 cmap = plt.cm.get_cmap("jet")
 robotStartPos2 = [0.1, 0, 0.6]
 
-def plot_figure(up, forward, position_world, cwT):
+def plot_figure(up, forward, position_world, cwT, end_p):
     # cam to world
     # up = mat33 @ up
     # forward = mat33 @ forward
@@ -37,7 +37,7 @@ def plot_figure(up, forward, position_world, cwT):
     # 初始化 gripper坐标系，默认gripper正方向朝向-z轴
     robotStartOrn = p.getQuaternionFromEuler([0, 0, 0])
     # gripper坐标系绕y轴旋转-pi/2, 使其正方向朝向+x轴
-    robotStartOrn1 = p.getQuaternionFromEuler([0, -np.pi/2, 0])
+    robotStartOrn1 = p.getQuaternionFromEuler([0, 0, -np.pi])
     robotStartrot3x3 = R.from_quat(robotStartOrn).as_matrix()
     robotStart2rot3x3 = R.from_quat(robotStartOrn1).as_matrix()
     # gripper坐标变换
@@ -63,7 +63,7 @@ def plot_figure(up, forward, position_world, cwT):
     rotmat[:3, :3] = basegrippermatT
     start_rotmat = np.array(rotmat, dtype=np.float32)
     # start_rotmat[:3, 3] = position_world - action_direction_world * 0.2 # 以齐次坐标形式添加 平移向量  ur5 grasp
-    start_rotmat[:3, 3] = position_world - forward * 0.17 # 以齐次坐标形式添加 平移向量
+    start_rotmat[:3, 3] = position_world - forward * end_p # 以齐次坐标形式添加 平移向量
     start_pose = Pose().from_transformation_matrix(start_rotmat) # 变换矩阵转位置和旋转（四元数）
     robotID = env.load_robot(ROBOT_URDF, start_pose.p, robotStartOrn3)
 
@@ -83,9 +83,9 @@ parser.add_argument('--overwrite', action='store_true', default=False, help='ove
 eval_conf = parser.parse_args()
 
 HERE = os.path.dirname(__file__)
-ROBOT_URDF = os.path.join(HERE, 'data', 'robotiq_85', 'urdf', 'ur5_robotiq_85.urdf')
+ROBOT_URDF = os.path.join(HERE, 'data', 'inspired_hand', 'urdf', 'urdf_right.urdf')
 # OBJECT_URDF = os.path.join(HERE, 'datasets', 'grasp', 'plastic_apple', 'model.urdf')
-OBJECT_URDF = os.path.join(HERE, 'datasets/data_10_15', 'Black_Elderberry_Syrup_54_oz_Gaia_Herbs', 'model.sdf')
+OBJECT_URDF = os.path.join(HERE, 'datasets/data_10_15', 'Crunch_Girl_Scouts_Candy_Bars_Peanut_Butter_Creme_78_oz_box', 'model.sdf')
 
 # load train config
 train_conf = torch.load(os.path.join('logs', eval_conf.exp_name, 'conf.pth'))
@@ -213,9 +213,9 @@ while grasp_succ:
 
     h = length_to_plane(position_world, gripper_forward_direction_camera[0,:].cpu(), plane_height=0.05)
     if h > 0.05:
-        d_gsp = 0.13
+        d_gsp = 0.04
     else:
-        d_gsp = 0.15 - h
+        d_gsp = 0.06 - h
     # final_dist = 0.13 # ur5 grasp
     final_dist = d_gsp
     depth = torch.full((train_conf.num_point_per_shape, 1),final_dist).float().to(device)
@@ -230,8 +230,8 @@ while grasp_succ:
         net = network.critic(feats, input_queries)
         result = torch.sigmoid(net).cpu().numpy()
         print("max(result) : ", np.max(result))
-        if np.max(result) > 0.95:
-            plot_figure(up[0].cpu().numpy(), forward[0].cpu().numpy(), position_world, cwT)
+        if np.max(result) > 0.98:
+            plot_figure(up[0].cpu().numpy(), forward[0].cpu().numpy(), position_world, cwT, final_dist)
 
             grasp_succ = 0
             # result *= pc_movable

@@ -50,7 +50,8 @@ args = parser.parse_args()
 
 HERE = os.path.dirname(__file__)
 ROBOT_URDF = os.path.join(HERE, 'data', 'allegro', 'urdf', 'movable_allegro.urdf')
-OBJECT_URDF = os.path.join(HERE, 'datasets', 'grasp', '%s', 'model.urdf') % args.category
+# OBJECT_URDF = os.path.join(HERE, 'datasets', 'grasp', '%s', 'model.urdf') % args.category
+OBJECT_URDF = os.path.join(HERE, '/datasets/data_10_15', '%s', 'model.sdf') % args.category
 
 robotStartPos0 = [0, 0, 0.2]
 robotStartPos1 = [0.1, 0, 0.4]
@@ -256,6 +257,7 @@ if action_direction_cam @ direction_cam > 0: # 两个向量的夹角小于90度
 out_info['gripper_direction_camera'] = action_direction_cam.tolist() # position p
 action_direction_world = action_direction_cam
 out_info['gripper_direction_world'] = action_direction_world.tolist()
+env.action_direction_world = action_direction_world
 
 # compute final pose
 # 初始化 gripper坐标系，默认gripper正方向朝向-z轴
@@ -357,6 +359,7 @@ finaljointPose = p.calculateInverseKinematics(robotID, 5, final_pose.p, robotSta
                                          upperLimits=max_limits, jointRanges=max_velocities, restPoses=current_conf)
 
 target_link_start_pose = get_link_pose(objectID, objectLinkid) # 得到世界坐标系下物体Link的位姿
+env.object_start_pose = target_link_start_pose
 
 success = True
 try:
